@@ -43,6 +43,8 @@ it:
 A board without a saved CMOS is skipped: its BIOS would stop at a setup
 prompt instead of booting the disk.
 
+Machines run one at a time; `-j N` runs N at once.
+
 The default speed is the fastest in-spec one the board takes;
 `--speed 350` picks one, `--all-speeds` runs them all.
 

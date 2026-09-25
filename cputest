@@ -580,7 +580,7 @@ def main():
         ap.add_argument("--speed", help="one speed, as 86Box names it (233, 400, ...)")
         ap.add_argument("--all-speeds", action="store_true", help="every in-spec speed the board takes")
         ap.add_argument("--image", help="another disk image instead of images/cputest.img")
-        ap.add_argument("-j", "--jobs", type=int, default=2, help="machines at once (default 2)")
+        ap.add_argument("-j", "--jobs", type=int, default=1, help="machines at once (default 1: one at a time)")
         ap.add_argument("--passes", type=int, default=1, help="passes to wait for (default 1)")
         ap.add_argument("--timeout", type=int, default=3600, help="seconds per machine (default 3600)")
         ap.add_argument("--interp", action="store_true", help="recompiler off, where the CPU allows it")
