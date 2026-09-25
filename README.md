@@ -54,8 +54,8 @@ Undefined flags that differ from the real CPU are only noted.
 ## Builds
 
 `local.toml` names builds; `--box master` picks one, `--box PATH` takes any
-binary under `<tree>/<builddir>/src/86Box`, and `CPUTEST_BOX` sets the
-default. The source tree is needed: the CPU and machine tables come from it,
+binary under `<tree>/<builddir>/src/86Box` (anywhere else with `--source
+TREE`, e.g. a frozen copy of a build), and `CPUTEST_BOX` sets the default. The source tree is needed: the CPU and machine tables come from it,
 and so does the revision printed in the report.
 
 ## Real-CPU references

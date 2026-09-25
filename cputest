@@ -80,8 +80,9 @@ def expand(p):
     return os.path.abspath(os.path.expanduser(p))
 
 
-def resolve_build(s, name):
-    """--box NAME from local.toml, or a path to an 86Box binary."""
+def resolve_build(s, name, source_arg=None):
+    """--box NAME from local.toml, or a path to an 86Box binary; --source
+    names the tree a loose binary (a frozen copy, say) was built from."""
     name = name or os.environ.get("CPUTEST_BOX") or s.get("default_build")
     if not name:
         raise SystemExit("no build: pass --box, set CPUTEST_BOX, or default_build in local.toml")
@@ -90,9 +91,13 @@ def resolve_build(s, name):
         binary, source = expand(b["binary"]), expand(b["source"])
     else:
         binary = expand(name)
-        # .../<tree>/<builddir>/src/86Box -> <tree>
-        source = os.path.dirname(os.path.dirname(os.path.dirname(binary)))
-        name = os.path.basename(source)
+        if source_arg:
+            source = expand(source_arg)
+            name = os.path.basename(binary)
+        else:
+            # .../<tree>/<builddir>/src/86Box -> <tree>
+            source = os.path.dirname(os.path.dirname(os.path.dirname(binary)))
+            name = os.path.basename(source)
     if not os.access(binary, os.X_OK):
         raise SystemExit("%s: not an executable" % binary)
     if not os.path.exists(os.path.join(source, "src", "cpu", "cpu_table.c")):
@@ -403,7 +408,7 @@ def cmd_sync(s):
 
 
 def cmd_list(s, args):
-    build = resolve_build(s, args.box)
+    build = resolve_build(s, args.box, args.source)
     fams = tables.load_cpus(os.path.join(build["source"], "src"))
     machs = tables.load_machines(os.path.join(build["source"], "src"))
     wanted = [resolve_cpu(fams, args.cpu)] if args.cpu else None
@@ -422,7 +427,7 @@ def cmd_list(s, args):
 
 
 def cmd_golden(s, args):
-    s_build = resolve_build(s, args.box)
+    s_build = resolve_build(s, args.box, args.source)
     fams = tables.load_cpus(os.path.join(s_build["source"], "src"))
     fam = resolve_cpu(fams, args.cpu)
     text = open(args.log, errors="replace").read()
@@ -453,7 +458,7 @@ def cmd_setup(s, args):
       save          the CMOS it has written, back into the template
       quit
     """
-    build = resolve_build(s, args.box)
+    build = resolve_build(s, args.box, args.source)
     if not build["fast_forward_option"]:
         raise SystemExit("%s cannot start a machine fast-forwarded" % build["label"])
     ts = templates([args.board])
@@ -516,7 +521,7 @@ def cmd_setup(s, args):
 
 
 def cmd_run(s, args):
-    build = resolve_build(s, args.box)
+    build = resolve_build(s, args.box, args.source)
     src = os.path.join(build["source"], "src")
     fams, machs = tables.load_cpus(src), tables.load_machines(src)
     fam = resolve_cpu(fams, args.cpu)
@@ -568,6 +573,7 @@ def main():
         cmd = "run"
     ap = argparse.ArgumentParser(prog="cputest " + (cmd if cmd != "run" else ""))
     ap.add_argument("--box", help="build name from local.toml, or a path to an 86Box binary")
+    ap.add_argument("--source", help="with --box PATH: the 86Box source tree it was built from")
     if cmd == "run":
         ap.add_argument("cpu")
         ap.add_argument("--machine", action="append", help="socket/board or board; repeatable")
