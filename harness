@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+"""86Box test harness: boot a test image on emulated machines, headless and
+fast-forwarded, and judge what it prints on COM1.
+
+  harness run IMAGE [--family F] [--socket S] [--machine M] [--cpu C]
+                    [--test-all] [--speed S | --all-speeds] [--box BUILD]
+                    [-j N] [--passes N] [--timeout S] [--interp]
+  harness list [--family F] [--cpu C]     machines, and the speeds each takes
+  harness images                          the images on file
+  harness sync [IMAGE]                    copy an image's disk in from its source
+  harness setup BOARD [--image IMAGE]     boot a board for its BIOS setup
+  harness golden IMAGE CPU LOG            keep a real machine's output as reference
+
+See README.md.
+"""
+
+import argparse
+import concurrent.futures
+import configparser
+import datetime
+import io
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import tomllib
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from harness_lib import images, launch, parsers, tables  # noqa: E402
+
+MACHINES = os.path.join(HERE, "machines")
+GOLDEN = os.path.join(HERE, "golden")
+RESULTS = os.path.join(HERE, "results")
+
+print_lock = threading.Lock()
+
+
+def say(*args):
+    with print_lock:
+        print(*args, flush=True)
+
+
+def expand(p):
+    return os.path.abspath(os.path.expanduser(p))
+
+
+def load_toml(name):
+    with open(os.path.join(HERE, name), "rb") as f:
+        return tomllib.load(f)
+
+
+# ---- settings and builds ----------------------------------------------------
+
+def settings():
+    path = os.path.join(HERE, "local.toml")
+    if not os.path.exists(path):
+        raise SystemExit("no local.toml: copy local.example.toml and fill it in")
+    with open(path, "rb") as f:
+        s = tomllib.load(f)
+    s.setdefault("builds", {})
+    s.setdefault("images", {})
+    return s
+
+
+def resolve_build(s, name, source_arg=None):
+    """--box NAME from local.toml, or a path to an 86Box binary; --source
+    names the tree a loose binary (a frozen copy, say) was built from."""
+    name = name or os.environ.get("HARNESS_BOX") or s.get("default_build")
+    if not name:
+        raise SystemExit("no build: pass --box, set HARNESS_BOX, or default_build in local.toml")
+    if name in s["builds"]:
+        b = s["builds"][name]
+        binary, source = expand(b["binary"]), expand(b["source"])
+    else:
+        binary = expand(name)
+        if source_arg:
+            source = expand(source_arg)
+            name = os.path.basename(binary)
+        else:
+            # .../<tree>/<builddir>/src/86Box -> <tree>
+            source = os.path.dirname(os.path.dirname(os.path.dirname(binary)))
+            name = os.path.basename(source)
+    if not os.access(binary, os.X_OK):
+        raise SystemExit("%s: not an executable" % binary)
+    if not os.path.exists(os.path.join(source, "src", "cpu", "cpu_table.c")):
+        raise SystemExit("%s: not an 86Box source tree (needed for its CPU and machine tables)" % source)
+
+    def git(*a):
+        return subprocess.run(["git", "-C", source] + list(a), capture_output=True, text=True).stdout.strip()
+    rev = git("rev-parse", "--short", "HEAD") or "?"
+    dirty = "-dirty" if git("status", "--porcelain", "--untracked-files=no") else ""
+    config_c = open(os.path.join(source, "src", "config.c"), encoding="latin-1").read()
+    src = os.path.join(source, "src")
+    tree = "%s@%s%s" % (git("branch", "--show-current") or "detached", rev, dirty)
+    # A binary kept outside its tree (a frozen copy) was not necessarily
+    # built from the tree's current revision: say so.
+    inside = os.path.realpath(binary).startswith(os.path.realpath(source) + os.sep)
+    label = "%s %s" % (name, tree) if inside else "%s (tables from %s)" % (name, tree)
+    return dict(name=name, binary=binary, source=source, label=label,
+                fast_forward_option='"fast_forward"' in config_c,
+                cpus=tables.load_cpus(src), machines=tables.load_machines(src))
+
+
+def need_fast_forward(build):
+    if not build["fast_forward_option"]:
+        raise SystemExit("%s cannot start a machine fast-forwarded (no fast_forward option in its config.c)"
+                         % build["label"])
+
+
+def resolve_cpu(build, arg):
+    fams = build["cpus"]
+    aliases = load_toml("cpus.toml").get("aliases", {})
+    key = aliases.get(arg.lower(), arg.lower()).replace("-", "_")
+    if key in fams:
+        return fams[key]
+    norm = lambda t: re.sub(r"[^a-z0-9+]", "", t.lower())  # noqa: E731
+    for f in fams.values():
+        if norm(f.name) == norm(arg):
+            return f
+    raise SystemExit("unknown CPU %r; aliases: %s" % (arg, ", ".join(sorted(aliases))))
+
+
+# ---- machines ---------------------------------------------------------------
+
+def read_cfg(path):
+    cfg = configparser.ConfigParser(interpolation=None, strict=False)
+    cfg.optionxform = str
+    cfg.read(path)
+    return cfg
+
+
+def cfg_text(cfg):
+    out = io.StringIO()
+    cfg.write(out)
+    return out.getvalue()
+
+
+def templates(families=None, sockets=None, boards=None):
+    """machines/<socket>/<board>/, narrowed by family, socket and board."""
+    fam_map = load_toml("families.toml").get("families", {})
+    allowed = set()
+    for f in families or []:
+        if f not in fam_map:
+            raise SystemExit("no family %r; there are: %s" % (f, ", ".join(fam_map)))
+        allowed |= set(fam_map[f])
+    if sockets:
+        allowed = (allowed & set(sockets)) if families else set(sockets)
+    found = []
+    for socket in sorted(os.listdir(MACHINES)):
+        sdir = os.path.join(MACHINES, socket)
+        if not os.path.isdir(sdir) or (allowed and socket not in allowed):
+            continue
+        for board in sorted(os.listdir(sdir)):
+            d = os.path.join(sdir, board)
+            if not os.path.exists(os.path.join(d, "86box.cfg")):
+                continue
+            slug = "%s/%s" % (socket, board)
+            if boards and not any(b.lower() in (slug.lower(), board.lower()) for b in boards):
+                continue
+            m = read_cfg(os.path.join(d, "86box.cfg"))["Machine"]
+            found.append(dict(slug=slug, board=board, dir=d, machine=m["machine"],
+                              cpu_family=m.get("cpu_family"), cpu_speed=int(m.get("cpu_speed", "0")),
+                              cpu_multi=float(m.get("cpu_multi", "0"))))
+    return found
+
+
+def has_cmos(t):
+    return any(f.endswith(".nvr") for f in os.listdir(os.path.join(t["dir"], "nvr")))
+
+
+def speeds_for(fam, mach, speed=None, all_speeds=False):
+    ok = [c for c in fam.cpus if tables.is_eligible(fam, c, mach)]
+    if speed:
+        return [c for c in ok if c.name == speed or c.name.split()[0] == speed or c.name.split("/")[0] == speed]
+    ok = [c for c in ok if not c.out_of_spec]
+    if all_speeds:
+        return ok
+    return ok[-1:] if ok else []
+
+
+# ---- one run ----------------------------------------------------------------
+
+def prepare_case(s, build, image, t, case, fam=None, cpu=None, interp=False):
+    """A run's own copy of machine T in CASE: its CMOS, private copies of the
+    emulator and the disk, and the cfg with the CPU (when given) set.
+    Returns the cfg text, with @SERIAL@ for the launcher to fill."""
+    os.makedirs(case, exist_ok=True)
+    nvr = os.path.join(case, "nvr")
+    if os.path.exists(nvr):
+        shutil.rmtree(nvr)
+    os.makedirs(nvr)
+    # The CMOS only: flash dumps are rebuilt from the BIOS ROM.
+    for f in os.listdir(os.path.join(t["dir"], "nvr")):
+        if f.endswith(".nvr"):
+            shutil.copy2(os.path.join(t["dir"], "nvr", f), nvr)
+    roms = os.path.join(case, "roms")
+    if not os.path.islink(roms):
+        os.symlink(expand(s.get("roms", "~/.local/share/86Box/roms")), roms)
+    # Private copies: a rebuild or a new image mid-run can't change this run.
+    shutil.copy2(build["binary"], os.path.join(case, "86Box.bin"))
+    disk = os.path.join(case, "disk.img")
+    image.copy_to(disk)
+
+    cfg = read_cfg(os.path.join(t["dir"], "86box.cfg"))
+    m = cfg["Machine"]
+    if fam:
+        m["cpu_family"] = fam.internal_name
+        m["cpu_speed"] = str(cpu.rspeed)
+        m["cpu_multi"] = ("%g" % cpu.multi) if cpu.multi != int(cpu.multi) else "%d" % cpu.multi
+    m["cpu_use_dynarec"] = "0" if interp else "1"
+    if "Hard disks" not in cfg:
+        cfg["Hard disks"] = {}
+    cfg["Hard disks"]["hdd_01_fn"] = disk
+    cfg["Hard disks"]["hdd_01_ide_channel"] = "0:0"
+    cfg["Hard disks"]["hdd_01_parameters"] = images.HDD_PARAMETERS
+    cfg["General"]["fast_forward"] = "1"
+    return cfg_text(cfg)
+
+
+def drop_copies(case):
+    for f in ("86Box.bin", "disk.img"):
+        p = os.path.join(case, f)
+        if os.path.exists(p):
+            os.unlink(p)
+
+
+def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
+    tag = "%s %s %s" % (t["slug"], fam.internal_name, cpu.name)
+    case = os.path.join(rundir, "%s-%s-%s" % (t["slug"].replace("/", "-"), fam.internal_name,
+                                              re.sub(r"[^0-9A-Za-z]+", "_", cpu.name)))
+    cfg = prepare_case(s, build, image, t, case, fam, cpu, args.interp)
+    box = launch.Box(case, os.path.join(case, "86Box.bin"))
+    status = "never started"
+    notes = []
+    start = time.time()
+    try:
+        box.start(cfg)
+        started_at = None
+        working = image.working is None
+        last_len, last_change = 0, time.time()
+        while time.time() - start < args.timeout:
+            box.pump(0.25)
+            text = box.buf.decode("latin-1")
+            if len(text) != last_len:
+                last_len, last_change = len(text), time.time()
+            if not box.alive():
+                status = "emulator exited (%s)" % box.box.returncode
+                break
+            if started_at is None:
+                if image.start.search(text):
+                    started_at = time.time()
+                    notes.append("started at %.1f s" % (started_at - start))
+                elif time.time() - start > image.start_wait:
+                    status = "not started within %d s: the machine never ran the image (screen.png)" % image.start_wait
+                    break
+                continue
+            if not working:
+                if image.working.search(text):
+                    working = True
+                    notes.append("working at %.1f s" % (time.time() - start))
+                elif time.time() - started_at > image.working_wait:
+                    status = "started but not working within %d s (screen.png)" % image.working_wait
+                    break
+                continue
+            if len([l for l in text.splitlines() if image.done.search(l)]) >= args.passes:
+                status = "done"
+                break
+            if time.time() - last_change > image.stall:
+                status = "hung: nothing on COM1 for %d s (screen.png)" % image.stall
+                break
+        else:
+            status = "timed out after %d s" % args.timeout
+        box.shot("screen.png")
+    finally:
+        box.stop()
+        drop_copies(case)
+    result = dict(tag=tag, slug=t["slug"], family=fam.internal_name, family_name=fam.name, speed=cpu.name,
+                  status=status, notes=notes, seconds=int(time.time() - start), case=case,
+                  parsed=parser.parse(box.buf.decode("latin-1"), image))
+    say("  %-40s %s, %d s" % (tag, status, result["seconds"]))
+    return result
+
+
+# ---- commands ---------------------------------------------------------------
+
+def plan(args, build):
+    """(template, family, cpu) for every run asked for."""
+    ts = templates(args.family, args.socket, args.machine)
+    if not ts:
+        raise SystemExit("no machine on file matches")
+    if args.test_all:
+        fam_names = load_toml("cpus.toml").get("test_all", {}).get("cpus", [])
+        wanted = [build["cpus"][n] for n in fam_names if n in build["cpus"]]
+    elif args.cpu:
+        wanted = [resolve_cpu(build, c) for c in args.cpu]
+    else:
+        wanted = None  # each machine's own CPU
+    jobs = []
+    for t in ts:
+        mach = build["machines"].get(t["machine"])
+        if not mach:
+            say("skip %-16s %s is not in %s" % (t["slug"], t["machine"], build["label"]))
+            continue
+        if not has_cmos(t):
+            say("skip %-16s no saved CMOS: run harness setup %s first" % (t["slug"], t["board"]))
+            continue
+        if wanted is None:
+            fam = build["cpus"].get(t["cpu_family"])
+            cpus = [c for c in fam.cpus if c.rspeed == t["cpu_speed"] and c.multi == t["cpu_multi"]] if fam else []
+            if not cpus:
+                say("skip %-16s its cfg's CPU (%s %s) is not in this build" % (t["slug"], t["cpu_family"],
+                                                                             t["cpu_speed"]))
+                continue
+            jobs.append((t, fam, cpus[0]))
+            continue
+        for fam in wanted:
+            cpus = speeds_for(fam, mach, args.speed, args.all_speeds)
+            if cpus:
+                jobs += [(t, fam, c) for c in cpus]
+            elif not args.test_all:
+                say("skip %-16s does not take a %s%s" % (t["slug"], fam.name,
+                                                        (" " + args.speed) if args.speed else ""))
+    if args.interp:
+        for t, fam, c in jobs:
+            if "CPU_REQUIRES_DYNAREC" in c.flags:
+                raise SystemExit("%s needs the recompiler; --interp is not possible" % fam.name)
+    return jobs
+
+
+def cmd_run(s, args):
+    image = images.Image(HERE, args.image)
+    parser = parsers.get(image.parser)
+    build = resolve_build(s, args.box, args.source)
+    need_fast_forward(build)
+    jobs = plan(args, build)
+    if not jobs:
+        raise SystemExit("nothing to run")
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    rundir = os.path.join(RESULTS, "%s-%s" % (stamp, image.name))
+    os.makedirs(rundir)
+    say("%s: %d run(s), build %s, results in %s" % (image.name, len(jobs), build["label"],
+                                                   os.path.relpath(rundir)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
+        futs = [ex.submit(run_one, s, build, image, parser, fam, c, t, rundir, args) for t, fam, c in jobs]
+        results = [f.result() for f in futs]
+
+    lines = ["harness %s" % image.name, "build   %s" % build["label"], "image   %s" % image.info(), ""]
+    ok = True
+    by_family = {}
+    for r in results:
+        by_family.setdefault(r["family"], []).append(r)
+    for family, runs in by_family.items():
+        lines.append("== %s (%s)" % (family, runs[0]["family_name"]))
+        fam_lines, fam_ok = parser.judge(family, runs, image, os.path.join(GOLDEN, image.name, family))
+        lines += fam_lines + [""]
+        ok = ok and fam_ok
+    lines.append("RESULT %s" % ("PASS" if ok else "FAIL"))
+    text = "\n".join(lines) + "\n"
+    open(os.path.join(rundir, "summary.txt"), "w").write(text)
+    print()
+    print(text, end="")
+    return 0 if ok else 1
+
+
+def cmd_list(s, args):
+    build = resolve_build(s, args.box, args.source)
+    wanted = [resolve_cpu(build, c) for c in args.cpu] if args.cpu else None
+    for t in templates(args.family, args.socket, args.machine):
+        mach = build["machines"].get(t["machine"])
+        if not mach:
+            print("%-16s %s: not in this build" % (t["slug"], t["machine"]))
+            continue
+        print("%-16s %s%s" % (t["slug"], mach.name, "" if has_cmos(t) else "  (no saved CMOS yet)"))
+        for fam in (wanted or build["cpus"].values()):
+            ok = [c.name for c in fam.cpus if tables.is_eligible(fam, c, mach) and not c.out_of_spec]
+            if ok:
+                print("    %-20s %s" % (fam.internal_name, " ".join(ok)))
+            elif wanted:
+                print("    %-20s does not fit this board" % fam.internal_name)
+
+
+def cmd_images(s, args):
+    for n in images.names(HERE):
+        img = images.Image(HERE, n)
+        print("%-12s %s\n             %s" % (n, img.description, img.info()))
+
+
+def cmd_sync(s, args):
+    todo = [args.image] if args.image else list(s["images"])
+    if not todo:
+        raise SystemExit("no [images.NAME] source in local.toml")
+    for n in todo:
+        src = s["images"].get(n, {}).get("source")
+        if not src:
+            raise SystemExit("no source for %s in local.toml ([images.%s] source = ...)" % (n, n))
+        print(images.sync(HERE, n, src))
+
+
+def cmd_golden(s, args):
+    image = images.Image(HERE, args.image)
+    parser = parsers.get(image.parser)
+    build = resolve_build(s, args.box, args.source)
+    fam = resolve_cpu(build, args.cpu)
+    text = open(args.log, errors="replace").read()
+    p = parser.parse(text, image)
+    keep = parser.golden_text(text)
+    if keep is None or not p.get("version"):
+        raise SystemExit("%s: no reference can be kept from this (parser %s)" % (args.log, image.parser))
+    dst = os.path.join(GOLDEN, image.name, fam.internal_name, "v%s.log" % p["version"])
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    open(dst, "w").write(keep)
+    print("%s: cpu %s" % (os.path.relpath(dst, HERE), p.get("cpu")))
+
+
+def cmd_setup(s, args):
+    """Boot one machine's template, image attached, for its BIOS setup, and
+    take commands from CASE/ctl, one per line:
+
+      key K ...     xdotool key names into the emulator window
+      type TEXT     typed as it stands
+      shot NAME     a screenshot, CASE/NAME.png
+      save          the CMOS it has written, back into the template
+      quit
+    """
+    build = resolve_build(s, args.box, args.source)
+    need_fast_forward(build)
+    ts = templates(boards=[args.board])
+    if len(ts) != 1:
+        raise SystemExit("no single machine matches %r" % args.board)
+    t = ts[0]
+    image = images.Image(HERE, args.image)
+    case = os.path.join(RESULTS, "setup-" + t["slug"].replace("/", "-"))
+    cfg = prepare_case(s, build, image, t, case)
+    ctl = os.path.join(case, "ctl")
+    if os.path.exists(ctl):
+        os.unlink(ctl)
+    os.mkfifo(ctl)
+    fd = os.open(ctl, os.O_RDONLY | os.O_NONBLOCK)
+    box = launch.Box(case, os.path.join(case, "86Box.bin"))
+    start = time.time()
+    shown = 0
+    try:
+        box.start(cfg)
+        say("setup %s: %s, display %s; commands to %s" % (t["slug"], build["label"], box.display, ctl))
+        pending = b""
+        while box.alive():
+            box.pump(0.2)
+            text = box.buf.decode("latin-1")
+            if len(text) > shown:
+                for line in text[shown:].splitlines():
+                    if line.strip():
+                        say("%6.1f COM1 %s" % (time.time() - start, line.strip()))
+                shown = len(text)
+            try:
+                chunk = os.read(fd, 4096)
+            except BlockingIOError:
+                chunk = b""
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                cmd, _, rest = line.decode().strip().partition(" ")
+                if cmd == "key":
+                    box.keys(*rest.split())
+                elif cmd == "type":
+                    subprocess.run(["xdotool", "type", "--delay", "80", rest], env=box.env, capture_output=True)
+                elif cmd == "shot":
+                    say("%6.1f shot %s" % (time.time() - start, box.shot(rest + ".png")))
+                elif cmd == "save":
+                    dst = os.path.join(t["dir"], "nvr")
+                    saved = [f for f in os.listdir(os.path.join(case, "nvr")) if f.endswith(".nvr")]
+                    for f in saved:
+                        shutil.copy2(os.path.join(case, "nvr", f), dst)
+                    say("%6.1f saved %s to %s" % (time.time() - start, " ".join(saved) or "nothing", dst))
+                elif cmd == "quit":
+                    return 0
+                elif cmd:
+                    say("unknown command %r" % cmd)
+        say("emulator exited (%s)" % box.box.returncode)
+    finally:
+        box.stop()
+        drop_copies(case)
+        if os.path.exists(ctl):
+            os.unlink(ctl)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="harness", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def build_args(p):
+        p.add_argument("--box", help="build name from local.toml, or a path to an 86Box binary")
+        p.add_argument("--source", help="with --box PATH: the 86Box source tree it was built from")
+
+    def select_args(p):
+        p.add_argument("--family", action="append", help="machine family from families.toml (486, 586, ...)")
+        p.add_argument("--socket", action="append", help="a folder under machines/ (ss7, slot1, ...)")
+        p.add_argument("--machine", action="append", help="socket/board or board")
+        p.add_argument("--cpu", action="append", help="alias from cpus.toml or an 86Box CPU family")
+
+    default_image = (images.names(HERE) or [None])[0]
+
+    p = sub.add_parser("run", help="boot an image on the selected machines and judge it")
+    p.add_argument("image", nargs="?", default=default_image)
+    build_args(p)
+    select_args(p)
+    p.add_argument("--test-all", action="store_true",
+                   help="every CPU in cpus.toml [test_all] on every selected machine that takes it")
+    p.add_argument("--speed", help="one speed, as 86Box names it (233, 400, ...)")
+    p.add_argument("--all-speeds", action="store_true", help="every in-spec speed each board takes")
+    p.add_argument("-j", "--jobs", type=int, default=1, help="machines at once (default 1: one at a time)")
+    p.add_argument("--passes", type=int, default=1, help="done lines to wait for (default 1)")
+    p.add_argument("--timeout", type=int, default=3600, help="seconds per run (default 3600)")
+    p.add_argument("--interp", action="store_true", help="recompiler off, where the CPU allows it")
+
+    p = sub.add_parser("list", help="machines on file and the CPUs each takes")
+    build_args(p)
+    select_args(p)
+
+    sub.add_parser("images", help="the images on file")
+
+    p = sub.add_parser("sync", help="copy an image's disk in from its local.toml source")
+    p.add_argument("image", nargs="?")
+
+    p = sub.add_parser("setup", help="boot a board for its BIOS setup, driven through a control pipe")
+    p.add_argument("board")
+    p.add_argument("--image", default=default_image)
+    build_args(p)
+
+    p = sub.add_parser("golden", help="keep a real machine's output as the reference for a CPU")
+    p.add_argument("image")
+    p.add_argument("cpu")
+    p.add_argument("log", help="serial capture from the real machine")
+    build_args(p)
+
+    args = ap.parse_args()
+    if getattr(args, "image", None) is None and args.cmd in ("run", "setup", "golden"):
+        raise SystemExit("no image: put a descriptor in images/")
+    s = settings()
+    return dict(run=cmd_run, list=cmd_list, images=cmd_images, sync=cmd_sync,
+                setup=cmd_setup, golden=cmd_golden)[args.cmd](s, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

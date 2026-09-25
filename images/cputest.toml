@@ -1,0 +1,22 @@
+# The CPU accuracy test: https://github.com/Hinoserm/corsac-cputest
+#
+# Runs every test through 86Box's interpreter and its recompiler and
+# compares them; prints one GROUP line per group of tests, with CRCs of the
+# results, and DONE at the end of each pass.
+
+description = "x86 CPU accuracy: interpreter against recompiler, and against real CPUs"
+disk = "cputest.img"
+parser = "cputest"
+
+# The first COM1 line that proves the image is running, the first line that
+# proves it is doing its work, and the line that ends a pass.
+start = "^CPUTEST "
+working = "^(START|PROGRESS|GROUP) "
+done = "^DONE "
+
+# Wall-clock seconds, with the machine fast-forwarded: power-on to `start`
+# (boards take 2-3 s), `start` to `working`, and the longest silence
+# allowed once working (the test prints PROGRESS every 3 guest seconds).
+start_wait = 10
+working_wait = 3
+stall = 30

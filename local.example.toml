@@ -1,20 +1,19 @@
 # Copy to local.toml (not committed) and point it at your own builds.
 
-# The build a run uses unless --box or CPUTEST_BOX says otherwise.
-default_build = "hostregs"
-
-# Where `cputest sync` copies the test image from.
-image_source = "~/projects/cputest-rom/build/cputest.img"
+# The build a run uses unless --box or HARNESS_BOX says otherwise.
+default_build = "master"
 
 # 86Box's ROM set.
 roms = "~/.local/share/86Box/roms"
 
-# Each build: the binary, and the source tree it was built from (the bench
-# reads its CPU and machine tables, and its git revision for the report).
-[builds.hostregs]
-binary = "~/src/86Box-hostregs/buildfast/src/86Box"
-source = "~/src/86Box-hostregs"
-
+# Each build: the binary, and the 86Box source tree it was built from. The
+# harness reads that tree's CPU and machine tables, its git revision for
+# the report, and whether it has the fast_forward option (it must).
 [builds.master]
-binary = "~/src/86Box-interpfix/buildfast/src/86Box"
-source = "~/src/86Box-interpfix"
+binary = "~/src/86Box/build/src/86Box"
+source = "~/src/86Box"
+
+# Where `harness sync` fetches each image's disk from. Inside a git tree,
+# the committed version is taken.
+[images.cputest]
+source = "~/src/corsac-cputest/build/cputest.img"

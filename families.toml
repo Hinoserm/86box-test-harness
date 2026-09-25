@@ -1,0 +1,8 @@
+# Machine families, for --family: which folders under machines/ each one
+# covers. A folder may sit in more than one family.
+
+[families]
+386 = ["386sx", "386dx"]
+486 = ["socket1", "socket2", "socket3", "486"]
+586 = ["socket4", "socket5", "socket7", "ss7"]
+686 = ["socket8", "slot1", "socket370", "slot2"]

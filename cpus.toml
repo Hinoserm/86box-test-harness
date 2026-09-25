@@ -1,0 +1,35 @@
+# Short names for 86Box CPU families (the internal names in
+# src/cpu/cpu_table.c work too), and the CPUs --test-all runs.
+
+[aliases]
+p54c = "pentium_p54c"
+pentium = "pentium_p54c"
+p55c = "pentium_p55c"
+mmx = "pentium_p55c"
+k6 = "k6_m7"
+k6-m6 = "k6_m6"
+k6-m7 = "k6_m7"
+k6-2 = "k6_2"
+k6-2p = "k6_2p"
+"k6-2+" = "k6_2p"
+k6-3 = "k6_3"
+k6-3p = "k6_3p"
+"k6-3+" = "k6_3p"
+ppro = "pentiumpro"
+p2 = "pentium2_deschutes"
+klamath = "pentium2_klamath"
+deschutes = "pentium2_deschutes"
+celeron = "celeron_mendocino"
+covington = "celeron_covington"
+mendocino = "celeron_mendocino"
+
+# --test-all: every machine on file, with each of these it can take, at
+# the fastest in-spec speed it takes it.
+[test_all]
+cpus = [
+    "pentium_p54c", "pentium_p55c",
+    "k6_m7", "k6_2", "k6_2p", "k6_3", "k6_3p",
+    "pentiumpro",
+    "pentium2_klamath", "pentium2_deschutes",
+    "celeron_covington", "celeron_mendocino",
+]
