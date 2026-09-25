@@ -78,6 +78,9 @@ Capture a real machine's COM1 through at least one pass, then:
 | Socket 7 | FIC PA-2012 | VIA VP3 | P54C, P55C, K6, K6-2 to 400/66 |
 | Super Socket 7 | ASUS P5A | ALi Aladdin V | P54C, P55C, K6-2, K6-III, K6-III+ |
 | Super Socket 7 | FIC VA-503+ | VIA MVP3 | P55C, K6-2, K6-III, K6-III+ (no P54C: 3.2 V max) |
+| Socket 8 | AOpen AP61 | Intel 450KX | Pentium Pro |
+| Socket 8 | ASUS P/I-P6RP4 | Intel 450GX | Pentium Pro |
+| Socket 8 | Gigabyte GA-686NX | Intel 440FX | Pentium Pro |
 
 `cputest list CPU` gives the exact speeds, from the build in use.
 
