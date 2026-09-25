@@ -156,6 +156,9 @@ the copy's cfg.
 | socket370 | Soyo SY-7SBB | SiS 600 | Award 4.51PG |
 | socket370 | A-Trend ATC7020BXII | SMSC VictoryBX-66 | Award 6.00PG |
 | socket370 | PC Partner VIM863S | VIA Apollo Pro | Award 4.51PG |
+| socket370 | ECS P6BAP-A+ | VIA Apollo Pro 133 | Award 4.51PG |
+| socket370 | Acorp 6VIA90AP | VIA Apollo Pro 133A | Award 6.00PGN |
+| socket370 | AmazePC AM-BX133 | Intel 440BX | Award 4.51PGN |
 
 `./harness list` gives the CPUs each takes, from the build in use.
 
