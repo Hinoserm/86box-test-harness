@@ -341,8 +341,13 @@ def report(fam, build, image_info, results, out):
             w("  %-4s %-16s defined=%s raw=%s%s%s" % ("FAIL" if bad else "ok", name, gr.get("crc_defined"),
                                                        gr.get("crc_raw"), ("  " + "; ".join(bad)) if bad else "",
                                                        note))
+        # One line per reason: the loop.* groups alone skip dozens at a time.
+        by_why = {}
         for name, why in r["skipped"].items():
-            w("  skip %-16s %s" % (name, why))
+            by_why.setdefault(why, []).append(name)
+        for why, names in by_why.items():
+            w("  skip %s: %s" % (why, " ".join(names) if len(names) <= 4 else "%d groups (%s ... %s)"
+                                  % (len(names), names[0], names[-1])))
         if r["version"] and not g:
             w("  (no real-CPU reference for %s v%s: compared only interpreter against recompiler)"
               % (fam.internal_name, r["version"]))
