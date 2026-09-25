@@ -37,6 +37,9 @@ GOLDEN = os.path.join(HERE, "golden")
 RESULTS = os.path.join(HERE, "results")
 
 print_lock = threading.Lock()
+# Set on Ctrl+C: the running machine stops through its normal cleanup and
+# nothing new starts.
+stop_event = threading.Event()
 
 
 def say(*args):
@@ -253,6 +256,9 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
             if not box.alive():
                 status = "emulator exited (%s)" % box.box.returncode
                 break
+            if stop_event.is_set():
+                status = "interrupted"
+                break
             if started_at is None:
                 if image.start.search(text):
                     started_at = time.time()
@@ -261,6 +267,12 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
                     status = "not started within %d s: the machine never ran the image (screen.png)" % image.start_wait
                     break
                 continue
+            # A second start line: the machine reset (a triple fault, say)
+            # and booted the image again. It would otherwise loop forever,
+            # never quiet long enough to count as hung.
+            if len(image.start.findall(text)) > 1:
+                status = "machine restarted: the image started again (screen.png)"
+                break
             if not working:
                 if image.working.search(text):
                     working = True
@@ -348,9 +360,18 @@ def cmd_run(s, args):
     os.makedirs(rundir)
     say("%s: %d run(s), build %s, results in %s" % (image.name, len(jobs), build["label"],
                                                    os.path.relpath(rundir)))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
-        futs = [ex.submit(run_one, s, build, image, parser, fam, c, t, rundir, args) for t, fam, c in jobs]
-        results = [f.result() for f in futs]
+    def one(t, fam, c):
+        return None if stop_event.is_set() else run_one(s, build, image, parser, fam, c, t, rundir, args)
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs))
+    futs = [ex.submit(one, t, fam, c) for t, fam, c in jobs]
+    try:
+        while not all(f.done() for f in futs):
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        say("interrupted: stopping the running machine, starting nothing more")
+        stop_event.set()
+    ex.shutdown(wait=True)
+    results = [r for r in (f.result() for f in futs) if r]
 
     lines = ["harness %s" % image.name, "build   %s" % build["label"], "image   %s" % image.info(), ""]
     ok = True
