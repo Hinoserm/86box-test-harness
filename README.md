@@ -140,6 +140,8 @@ the copy's cfg.
 | socket8 | ASUS P/I-P6RP4 | Intel 450GX | AMI WinBIOS 1994 |
 | socket8 | Gigabyte GA-686NX | Intel 440FX | Award 4.51PG |
 | slot1 | ASUS P3B-F | Intel 440BX | Award Medallion 6.0 |
+| slot1 | FIC KA-6130 | VIA Apollo Pro | Award 4.51PG |
+| slot1 | Freetech/Flexus P6F99 | SiS 5600 | Award 4.51PG |
 
 `./harness list` gives the CPUs each takes, from the build in use.
 
