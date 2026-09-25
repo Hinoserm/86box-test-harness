@@ -169,7 +169,9 @@ def templates(families=None, sockets=None, boards=None):
 
 
 def has_cmos(t):
-    return any(f.endswith(".nvr") for f in os.listdir(os.path.join(t["dir"], "nvr")))
+    # git keeps no empty folders: a board without a CMOS has no nvr/ at all.
+    d = os.path.join(t["dir"], "nvr")
+    return os.path.isdir(d) and any(f.endswith(".nvr") for f in os.listdir(d))
 
 
 def speeds_for(fam, mach, speed=None, all_speeds=False):
@@ -194,6 +196,7 @@ def prepare_case(s, build, image, t, case, fam=None, cpu=None, interp=False):
         shutil.rmtree(nvr)
     os.makedirs(nvr)
     # The CMOS only: flash dumps are rebuilt from the BIOS ROM.
+    os.makedirs(os.path.join(t["dir"], "nvr"), exist_ok=True)
     for f in os.listdir(os.path.join(t["dir"], "nvr")):
         if f.endswith(".nvr"):
             shutil.copy2(os.path.join(t["dir"], "nvr", f), nvr)
