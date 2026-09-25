@@ -171,9 +171,20 @@ def templates(families=None, sockets=None, boards=None):
     return found
 
 
-def has_cmos(t):
+def cmos_dir(t, fam=None):
+    """The folder a run takes its CMOS from: nvr-<family>/ when the board
+    has one saved with that CPU (for BIOSes that stop at POST when the CPU
+    changes), otherwise nvr/, saved with the template's own CPU."""
+    if fam is not None:
+        d = os.path.join(t["dir"], "nvr-" + fam.internal_name)
+        if os.path.isdir(d) and any(f.endswith(".nvr") for f in os.listdir(d)):
+            return d
+    return os.path.join(t["dir"], "nvr")
+
+
+def has_cmos(t, fam=None):
     # git keeps no empty folders: a board without a CMOS has no nvr/ at all.
-    d = os.path.join(t["dir"], "nvr")
+    d = cmos_dir(t, fam)
     return os.path.isdir(d) and any(f.endswith(".nvr") for f in os.listdir(d))
 
 
@@ -199,10 +210,11 @@ def prepare_case(s, build, image, t, case, fam=None, cpu=None, interp=False):
         shutil.rmtree(nvr)
     os.makedirs(nvr)
     # The CMOS only: flash dumps are rebuilt from the BIOS ROM.
-    os.makedirs(os.path.join(t["dir"], "nvr"), exist_ok=True)
-    for f in os.listdir(os.path.join(t["dir"], "nvr")):
+    src = cmos_dir(t, fam)
+    os.makedirs(src, exist_ok=True)
+    for f in os.listdir(src):
         if f.endswith(".nvr"):
-            shutil.copy2(os.path.join(t["dir"], "nvr", f), nvr)
+            shutil.copy2(os.path.join(src, f), nvr)
     roms = os.path.join(case, "roms")
     if not os.path.islink(roms):
         os.symlink(expand(s.get("roms", "~/.local/share/86Box/roms")), roms)
@@ -458,8 +470,19 @@ def cmd_setup(s, args):
         raise SystemExit("no single machine matches %r" % args.board)
     t = ts[0]
     image = images.Image(HERE, args.image)
-    case = os.path.join(RESULTS, "setup-" + t["slug"].replace("/", "-"))
-    cfg = prepare_case(s, build, image, t, case)
+    fam = cpu = None
+    save_dir = os.path.join(t["dir"], "nvr")
+    if args.cpu:
+        fam = resolve_cpu(build, args.cpu)
+        mach = build["machines"][t["machine"]]
+        cpus = speeds_for(fam, mach, args.speed)
+        if not cpus:
+            raise SystemExit("%s does not take a %s" % (t["slug"], fam.name))
+        cpu = cpus[-1]
+        if fam.internal_name != t["cpu_family"]:
+            save_dir = os.path.join(t["dir"], "nvr-" + fam.internal_name)
+    case = os.path.join(RESULTS, "setup-" + t["slug"].replace("/", "-") + ("-" + fam.internal_name if fam else ""))
+    cfg = prepare_case(s, build, image, t, case, fam, cpu)
     ctl = os.path.join(case, "ctl")
     if os.path.exists(ctl):
         os.unlink(ctl)
@@ -495,7 +518,8 @@ def cmd_setup(s, args):
                 elif cmd == "shot":
                     say("%6.1f shot %s" % (time.time() - start, box.shot(rest + ".png")))
                 elif cmd == "save":
-                    dst = os.path.join(t["dir"], "nvr")
+                    dst = save_dir
+                    os.makedirs(dst, exist_ok=True)
                     saved = [f for f in os.listdir(os.path.join(case, "nvr")) if f.endswith(".nvr")]
                     for f in saved:
                         shutil.copy2(os.path.join(case, "nvr", f), dst)
@@ -553,6 +577,8 @@ def main():
     p = sub.add_parser("setup", help="boot a board for its BIOS setup, driven through a control pipe")
     p.add_argument("board")
     p.add_argument("--image", default=default_image)
+    p.add_argument("--cpu", help="boot it with this CPU; `save` then keeps the CMOS as nvr-<family>/")
+    p.add_argument("--speed", help="with --cpu: one speed (default the fastest in spec)")
     build_args(p)
 
     p = sub.add_parser("golden", help="keep a real machine's output as the reference for a CPU")

@@ -150,6 +150,12 @@ the copy's cfg.
 | slot1 | PC Chips M729 | ALi Aladdin Pro II | AMIBIOS 1996 (Simple Setup) |
 | slot1 | ECS P6BAT-A+ | VIA Apollo Pro 133 | Award 4.51PG |
 | slot1 | ASUS P3V4X | VIA Apollo Pro 133A | Award Medallion 6.0 |
+| slot2 | Gigabyte GA-6GXU | Intel 440GX | Award (defaults boot as they are) |
+| socket370 | Supermicro 370SLM | Intel 440LX | AMI WinBIOS 1997 |
+| socket370 | Soltek SL-63A1 | Intel 440ZX | Award 4.51PG |
+| socket370 | Soyo SY-7SBB | SiS 600 | Award 4.51PG |
+| socket370 | A-Trend ATC7020BXII | SMSC VictoryBX-66 | Award 6.00PG |
+| socket370 | PC Partner VIM863S | VIA Apollo Pro | Award 4.51PG |
 
 `./harness list` gives the CPUs each takes, from the build in use.
 
@@ -176,6 +182,18 @@ the copy's cfg.
    The image's `start` line on COM1 is the proof. Then `save` and `quit`.
 4. Run the image on the new socket's boards straight away, to prove they
    work from a cold boot.
+
+**A CMOS per CPU.** Some BIOSes stop at POST whenever the CPU differs
+from the one their CMOS was saved with ("CPU has been changed", "please
+enter SETUP to set clock ratio", "a new CPU installed"). For those, boot
+the board with that CPU and save again:
+
+```
+./harness setup P6BAT-A+ --cpu ppro     # save goes to nvr-pentiumpro/
+```
+
+A run with `--cpu ppro` then takes its CMOS from `nvr-pentiumpro/`, and
+falls back to `nvr/` for every CPU that has no folder of its own.
 
 Tips from setting up the boards above:
 

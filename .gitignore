@@ -8,3 +8,5 @@ images/*
 # CMOS files only: a flash dump in nvr/ is the board's BIOS.
 machines/**/nvr/*
 !machines/**/nvr/*.nvr
+machines/**/nvr-*/*
+!machines/**/nvr-*/*.nvr
