@@ -22,6 +22,8 @@ deschutes = "pentium2_deschutes"
 celeron = "celeron_mendocino"
 covington = "celeron_covington"
 mendocino = "celeron_mendocino"
+xeon = "pentium2_xeon"
+c3 = "c3_samuel"
 
 # --test-all: every machine on file, with each of these it can take, at
 # the fastest in-spec speed it takes it.
@@ -32,4 +34,5 @@ cpus = [
     "pentiumpro",
     "pentium2_klamath", "pentium2_deschutes",
     "celeron_covington", "celeron_mendocino",
+    "pentium2_xeon", "c3_samuel",
 ]
