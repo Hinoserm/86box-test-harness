@@ -1,0 +1,20 @@
+# Copy to local.toml (not committed) and point it at your own builds.
+
+# The build a run uses unless --box or CPUTEST_BOX says otherwise.
+default_build = "hostregs"
+
+# Where `cputest sync` copies the test image from.
+image_source = "~/projects/cputest-rom/build/cputest.img"
+
+# 86Box's ROM set.
+roms = "~/.local/share/86Box/roms"
+
+# Each build: the binary, and the source tree it was built from (the bench
+# reads its CPU and machine tables, and its git revision for the report).
+[builds.hostregs]
+binary = "~/src/86Box-hostregs/buildfast/src/86Box"
+source = "~/src/86Box-hostregs"
+
+[builds.master]
+binary = "~/src/86Box-interpfix/buildfast/src/86Box"
+source = "~/src/86Box-interpfix"

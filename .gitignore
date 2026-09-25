@@ -1,0 +1,9 @@
+local.toml
+images/
+results/
+__pycache__/
+# CMOS files only: a flash dump in nvr/ is the board's BIOS.
+machines/**/nvr/*
+!machines/**/nvr/*.nvr
+# 86Box ignores every 86box.cfg; these are the machine templates.
+!machines/*/*/86box.cfg
