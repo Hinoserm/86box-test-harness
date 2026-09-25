@@ -142,6 +142,14 @@ the copy's cfg.
 | slot1 | ASUS P3B-F | Intel 440BX | Award Medallion 6.0 |
 | slot1 | FIC KA-6130 | VIA Apollo Pro | Award 4.51PG |
 | slot1 | Freetech/Flexus P6F99 | SiS 5600 | Award 4.51PG |
+| slot1 | ASUS KN97 | Intel 440FX | Award 4.51PG |
+| slot1 | QDI EXCELLENT II | Intel 440EX | Award (SpeedEasy) |
+| slot1 | MSI MS-6168 | Intel 440ZX | Award 4.51PG |
+| slot1 | Freeway FW-6400GX | Intel 440GX | AMIBIOS 1999 (HiFlex) |
+| slot1 | A-Trend ATC6310BXII | SMSC VictoryBX-66 | Award 6.00PG |
+| slot1 | PC Chips M729 | ALi Aladdin Pro II | AMIBIOS 1996 (Simple Setup) |
+| slot1 | ECS P6BAT-A+ | VIA Apollo Pro 133 | Award 4.51PG |
+| slot1 | ASUS P3V4X | VIA Apollo Pro 133A | Award Medallion 6.0 |
 
 `./harness list` gives the CPUs each takes, from the build in use.
 
