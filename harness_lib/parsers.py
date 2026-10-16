@@ -44,12 +44,16 @@ class Generic:
 class CpuTest:
     def parse(self, text, image):
         r = dict(version=None, cpu=None, groups={}, skipped={}, done=[], pass_diff=set())
-        for line in text.replace("\r", "").splitlines():
+        lines = text.replace("\r", "").split("\n")
+        for n, line in enumerate(lines):
             line = line.strip()
+            # The last piece has no newline after it: the machine was stopped
+            # while printing it, so a GROUP there is cut short.
+            cut = n == len(lines) - 1
             m = re.match(r"CPUTEST (\S+) .*?cpu=(.*)$", line)
             if m:
                 r["version"], r["cpu"] = m.group(1), m.group(2)
-            elif line.startswith("GROUP "):
+            elif line.startswith("GROUP ") and not cut:
                 parts = line.split()
                 if len(parts) > 2 and parts[2] == "skipped:":
                     r["skipped"][parts[1]] = " ".join(parts[3:])
