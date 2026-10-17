@@ -1,4 +1,5 @@
-"""One headless 86Box: a private Xvfb for its window, a pty for COM1.
+"""One headless 86Box: a private Xvfb for its window (Qt's offscreen
+platform on macOS, which has no X server), a pty for COM1.
 
 Every process is started here and stopped here by the pid it was started
 with. Nothing is ever found by matching the process table: a pattern
@@ -14,10 +15,12 @@ import shutil
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 
 _display_lock = threading.Lock()
+_MACOS = sys.platform == "darwin"
 
 # Nothing reaches a desktop session or an audio server.
 _DROP = ("WAYLAND_DISPLAY", "DISPLAY", "XDG_SESSION_TYPE", "PULSE_SERVER", "PULSE_COOKIE",
@@ -25,6 +28,10 @@ _DROP = ("WAYLAND_DISPLAY", "DISPLAY", "XDG_SESSION_TYPE", "PULSE_SERVER", "PULS
 
 
 def _exe(pid):
+    if _MACOS:
+        # No /proc: ps names the executable a process was started from.
+        out = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return os.path.realpath(out) if out else None
     try:
         return os.readlink("/proc/%d/exe" % pid)
     except OSError:
@@ -91,7 +98,7 @@ class Box:
         # settles on one. A number whose lock another server took first
         # makes this Xvfb exit, and the next number is tried.
         with _display_lock:
-            for n in range(200, 400):
+            for n in ([] if _MACOS else range(200, 400)):
                 if os.path.exists("/tmp/.X%d-lock" % n) or _x_listening(n):
                     continue
                 xvfb = subprocess.Popen(["Xvfb", ":%d" % n, "-screen", "0", "1024x768x24", "-nolisten", "tcp"],
@@ -107,7 +114,7 @@ class Box:
                 if xvfb.poll() is None:
                     xvfb.terminate()
                 xvfb.wait()
-        if not self.display:
+        if not self.display and not _MACOS:
             self.stop()
             raise SystemExit("Xvfb would not start")
 
@@ -116,7 +123,10 @@ class Box:
         cfg = os.path.join(self.case, "86box.cfg")
         open(cfg, "w").write(cfg_text.replace("@SERIAL@", os.ttyname(slave)))
 
-        env.update(DISPLAY=self.display, QT_QPA_PLATFORM="xcb", SDL_VIDEODRIVER="x11")
+        if _MACOS:
+            env.update(QT_QPA_PLATFORM="offscreen")
+        else:
+            env.update(DISPLAY=self.display, QT_QPA_PLATFORM="xcb", SDL_VIDEODRIVER="x11")
         self.box = subprocess.Popen([self.binary, "-P", self.case, "-C", cfg, "-V", "cputest"],
                                     stdout=open(os.path.join(self.case, "86box.out"), "w"),
                                     stderr=subprocess.STDOUT, env=env, cwd=self.case, start_new_session=True)
@@ -149,7 +159,9 @@ class Box:
 
     def keys(self, *keys):
         """Keystrokes into the emulator window (the guest sees them unless
-        they are one of 86Box's own shortcuts)."""
+        they are one of 86Box's own shortcuts). Not on macOS: no X server."""
+        if _MACOS:
+            return False
         wins = subprocess.run(["xdotool", "search", "--name", "86Box"], env=self.env,
                               capture_output=True, text=True).stdout.split()
         if not wins:
@@ -163,6 +175,8 @@ class Box:
 
     def shot(self, name):
         path = os.path.join(self.case, name)
+        if _MACOS:
+            return path  # offscreen: there is no screen to grab
         subprocess.run(["import", "-display", self.display, "-window", "root", path], env=self.env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         return path
@@ -178,7 +192,8 @@ class Box:
                             p.send_signal(sig)
                     except ProcessLookupError:
                         pass
-            end = time.time() + 3
+            # macOS takes longer to tear a process down (its JIT mappings).
+            end = time.time() + (10 if _MACOS else 3)
             while time.time() < end and any(p.poll() is None for p in self.procs):
                 time.sleep(0.1)
         left = [p.pid for p in self.procs if p.poll() is None]
