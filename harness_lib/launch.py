@@ -192,10 +192,14 @@ class Box:
                             p.send_signal(sig)
                     except ProcessLookupError:
                         pass
-            # macOS takes longer to tear a process down (its JIT mappings).
-            end = time.time() + (10 if _MACOS else 3)
+            # COM1 is read the while: on macOS a process that dies with
+            # output left in its terminal waits for it to drain first.
+            end = time.time() + 3
             while time.time() < end and any(p.poll() is None for p in self.procs):
-                time.sleep(0.1)
+                if hasattr(self, "master"):
+                    self.pump(0.1)
+                else:
+                    time.sleep(0.1)
         left = [p.pid for p in self.procs if p.poll() is None]
         if left:
             raise SystemExit("%s: pids %s will not stop" % (self.case, left))
