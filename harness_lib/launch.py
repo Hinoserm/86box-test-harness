@@ -84,8 +84,9 @@ class Box:
         self.display = None
         self.log = open(os.path.join(case, "serial.log"), "wb")
 
-    def start(self, cfg_text):
-        """cfg_text has "@SERIAL@" where the COM1 pipe path goes."""
+    def start(self, cfg_text, args=()):
+        """cfg_text has "@SERIAL@" where the COM1 pipe path goes; args go on
+        the emulator's command line."""
         clear_stale(self.case)
         env = {k: v for k, v in os.environ.items() if k not in _DROP}
         runtime = os.path.join(self.case, "runtime")
@@ -127,7 +128,7 @@ class Box:
             env.update(QT_QPA_PLATFORM="offscreen")
         else:
             env.update(DISPLAY=self.display, QT_QPA_PLATFORM="xcb", SDL_VIDEODRIVER="x11")
-        self.box = subprocess.Popen([self.binary, "-P", self.case, "-C", cfg, "-V", "cputest"],
+        self.box = subprocess.Popen([self.binary, "-P", self.case, "-C", cfg, "-V", "cputest"] + list(args),
                                     stdout=open(os.path.join(self.case, "86box.out"), "w"),
                                     stderr=subprocess.STDOUT, env=env, cwd=self.case, start_new_session=True)
         self._track(self.box, self.binary)

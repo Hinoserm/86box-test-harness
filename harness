@@ -97,6 +97,7 @@ def resolve_build(s, name, source_arg=None):
     rev = git("rev-parse", "--short", "HEAD") or "?"
     dirty = "-dirty" if git("status", "--porcelain", "--untracked-files=no") else ""
     config_c = open(os.path.join(source, "src", "config.c"), encoding="latin-1").read()
+    main_c = open(os.path.join(source, "src", "86box.c"), encoding="latin-1").read()
     src = os.path.join(source, "src")
     tree = "%s@%s%s" % (git("branch", "--show-current") or "detached", rev, dirty)
     # A binary kept outside its tree (a frozen copy) was not necessarily
@@ -105,13 +106,19 @@ def resolve_build(s, name, source_arg=None):
     label = "%s %s" % (name, tree) if inside else "%s (tables from %s)" % (name, tree)
     return dict(name=name, binary=binary, source=source, label=label,
                 fast_forward_option='"fast_forward"' in config_c,
+                fast_forward_arg='"--fast-forward"' in main_c,
                 cpus=tables.load_cpus(src), machines=tables.load_machines(src))
 
 
 def need_fast_forward(build):
-    if not build["fast_forward_option"]:
-        raise SystemExit("%s cannot start a machine fast-forwarded (no fast_forward option in its config.c)"
-                         % build["label"])
+    if not (build["fast_forward_option"] or build["fast_forward_arg"]):
+        raise SystemExit("%s cannot start a machine fast-forwarded (no --fast-forward in its 86box.c,"
+                         " no fast_forward option in its config.c)" % build["label"])
+
+
+def box_args(build):
+    """What the binary needs on its command line besides the case and cfg."""
+    return ["--fast-forward"] if build["fast_forward_arg"] else []
 
 
 def resolve_cpu(build, arg):
@@ -256,7 +263,7 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
     notes = []
     start = time.time()
     try:
-        box.start(cfg)
+        box.start(cfg, box_args(build))
         started_at = None
         working = image.working is None
         last_len, last_change = 0, time.time()
@@ -492,7 +499,7 @@ def cmd_setup(s, args):
     start = time.time()
     shown = 0
     try:
-        box.start(cfg)
+        box.start(cfg, box_args(build))
         say("setup %s: %s, display %s; commands to %s" % (t["slug"], build["label"], box.display, ctl))
         pending = b""
         while box.alive():
