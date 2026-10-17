@@ -133,6 +133,7 @@ the copy's cfg.
 | socket5 | ASUS PCI/I-P54SP4 | SiS 501 | Award 4.51G |
 | socket5 | Suk Jung SJ-P54CSR-100 | Intel 430FX | Award 4.50G |
 | socket7 | ASUS P/I-P55T2P4 | Intel 430HX | Award |
+| socket7 | AIR 54TDP | Intel 430HX | AMIBIOS 1995 (two processors; smp builds) |
 | socket7 | FIC PA-2012 | VIA VP3 | Award 4.51PG |
 | ss7 | ASUS P5A | ALi Aladdin V | Award |
 | ss7 | FIC VA-503+ | VIA MVP3 | Award 4.60PGA |
