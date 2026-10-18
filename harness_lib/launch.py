@@ -155,6 +155,28 @@ class Box:
                     self.log.write(data)
                     self.log.flush()
 
+    def automation_ff(self, sock, seconds=20):
+        """Fast forward on through the automation socket at sock, for a build
+        with no other way to start fast-forwarded; COM1 is read the while."""
+        import socket
+        if os.path.exists(sock):
+            os.unlink(sock)
+        end = time.time() + seconds
+        while time.time() < end and self.alive():
+            if os.path.exists(sock):
+                sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sk.settimeout(5)
+                try:
+                    sk.connect(sock)
+                    sk.sendall(b"ff on\n")
+                    return b'"ff":true' in sk.recv(4096)
+                except OSError:
+                    pass
+                finally:
+                    sk.close()
+            self.pump(0.2)
+        return False
+
     def alive(self):
         return self.box.poll() is None
 

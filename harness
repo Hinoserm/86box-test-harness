@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -104,21 +105,48 @@ def resolve_build(s, name, source_arg=None):
     # built from the tree's current revision: say so.
     inside = os.path.realpath(binary).startswith(os.path.realpath(source) + os.sep)
     label = "%s %s" % (name, tree) if inside else "%s (tables from %s)" % (name, tree)
+    # The automation socket's ff command: only a binary built with it.
+    with open(binary, "rb") as f:
+        ff_socket = b'"ff":%s' in f.read()
     return dict(name=name, binary=binary, source=source, label=label,
                 fast_forward_option='"fast_forward"' in config_c,
                 fast_forward_arg='"--fast-forward"' in main_c,
+                fast_forward_socket=ff_socket,
                 cpus=tables.load_cpus(src), machines=tables.load_machines(src))
 
 
 def need_fast_forward(build):
-    if not (build["fast_forward_option"] or build["fast_forward_arg"]):
+    if not (build["fast_forward_option"] or build["fast_forward_arg"] or build["fast_forward_socket"]):
         raise SystemExit("%s cannot start a machine fast-forwarded (no --fast-forward in its 86box.c,"
-                         " no fast_forward option in its config.c)" % build["label"])
+                         " no fast_forward option in its config.c, no ff on its automation socket:"
+                         " build it with AUTOMATION=ON)" % build["label"])
 
 
-def box_args(build):
+def ff_socket(build, case):
+    """Where the automation socket goes when fast forward is turned on
+    through it (a build with neither of the other ways), else None. A Unix
+    socket's path has a length limit (104 bytes on macOS)."""
+    if build["fast_forward_option"] or build["fast_forward_arg"] or not build["fast_forward_socket"]:
+        return None
+    path = os.path.join(case, "a.sock")
+    if len(path.encode()) > 100:
+        path = os.path.join(RESULTS, "a%08x.sock" % (zlib.crc32(case.encode())))
+    return path
+
+
+def box_args(build, case):
     """What the binary needs on its command line besides the case and cfg."""
-    return ["--fast-forward"] if build["fast_forward_arg"] else []
+    if build["fast_forward_arg"]:
+        return ["--fast-forward"]
+    sock = ff_socket(build, case)
+    return ["--automation", "unix:" + sock] if sock else []
+
+
+def box_start(box, build, case, cfg):
+    box.start(cfg, box_args(build, case))
+    sock = ff_socket(build, case)
+    if sock and not box.automation_ff(sock):
+        raise SystemExit("%s: fast forward did not turn on through %s" % (case, sock))
 
 
 def resolve_cpu(build, arg):
@@ -263,7 +291,7 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
     notes = []
     start = time.time()
     try:
-        box.start(cfg, box_args(build))
+        box_start(box, build, case, cfg)
         started_at = None
         working = image.working is None
         last_len, last_change = 0, time.time()
@@ -499,7 +527,7 @@ def cmd_setup(s, args):
     start = time.time()
     shown = 0
     try:
-        box.start(cfg, box_args(build))
+        box_start(box, build, case, cfg)
         say("setup %s: %s, display %s; commands to %s" % (t["slug"], build["label"], box.display, ctl))
         pending = b""
         while box.alive():
