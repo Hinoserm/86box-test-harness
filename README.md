@@ -130,6 +130,7 @@ the copy's cfg.
 
 | socket | board | chipset | BIOS |
 |---|---|---|---|
+| socket5 | ASUS PCI/I-P54NP4 | Intel 430NX, 82378ZB SIO | Award 4.51G |
 | socket5 | ASUS PCI/I-P54SP4 | SiS 501 | Award 4.51G |
 | socket5 | Suk Jung SJ-P54CSR-100 | Intel 430FX | Award 4.50G |
 | socket7 | ASUS P/I-P55T2P4 | Intel 430HX | Award |
