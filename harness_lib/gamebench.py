@@ -21,6 +21,8 @@ throughout; the figure is host seconds.
   heretic heretic (MS-DOS, S3): Heretic 1.2 shareware `-timedemo demo1` looping from
           AUTOEXEC.BAT, timed as DOOM is.
   hexen   hexen  (MS-DOS, S3): the Hexen demo `-timedemo demo1`, likewise.
+  quake   quake  (MS-DOS, S3): Quake 1.06 shareware `+timedemo demo1` (no sound),
+          30 s of it from 20 s after power-on.
 
 The first and last frames of the timed stretch are saved as TAG-first.png and
 TAG-last.png beside the run's log, to check the run got where it should."""
@@ -36,10 +38,10 @@ import subprocess
 import time
 import zlib
 
-GAMES = ("doom", "q3", "dagger", "shock", "aitd", "heretic", "hexen")
+GAMES = ("doom", "q3", "dagger", "shock", "aitd", "heretic", "hexen", "quake")
 MACHINE = {"doom": "doom", "q3": "gm98", "dagger": "gmdos", "shock": "gmdos", "aitd": "gmdos", "heretic": "heretic",
-           "hexen": "hexen"}
-DISKS = {"doom": ("dos.img",), "heretic": ("dos.img",), "hexen": ("dos.img",), "gm98": ("c.img", "games.img"),
+           "hexen": "hexen", "quake": "quake"}
+DISKS = {"doom": ("dos.img",), "heretic": ("dos.img",), "hexen": ("dos.img",), "quake": ("dos.img",), "gm98": ("c.img", "games.img"),
          "gmdos": ("c.img", "games.img")}
 CD = {"dagger": "dagger.iso", "shock": "termfs.iso", "aitd": "aitd.cue"}
 MEASURE_MS = 30000
@@ -272,6 +274,12 @@ class Run:
 
     def run_hexen(self):
         return self.run_doom(banner="Press any key")
+
+    def run_quake(self):
+        # Quake 1.06 shareware `+timedemo demo1` from AUTOEXEC.BAT, its software
+        # renderer drawing as fast as it can: 30 s of it, 20 s after power-on.
+        self.step(20000)
+        return self.timed(MEASURE_MS)
 
     def run_q3(self):
         self.step(50000)  # Windows to the desktop
