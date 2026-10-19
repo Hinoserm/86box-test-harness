@@ -257,6 +257,7 @@ class Run:
         self.typ("d:\\quake3\\quake3.exe +set r_mode 4 +set logfile 2 +set timedemo 1 +set nextdemo quit "
                  "+demo demo001\n")
         t0 = t1 = None
+        shots = []
         for _ in range(4 * 600):
             if t0 is None:
                 self.step(SLICE_MS)
@@ -267,6 +268,10 @@ class Run:
                 t0, g0 = time.monotonic(), s["ms"]
                 self.shot("first")
                 self.mark()
+                shots = [g0 + 4000 * i for i in range(1, 9)]  # the demo itself, to look over
+            elif t0 is not None and shots and s["ms"] >= shots[0] and s["w"] == 800:
+                self.shot("demo%d" % (9 - len(shots)))
+                shots.pop(0)
             elif t0 is not None and s["w"] == 640:
                 t1, g1 = time.monotonic(), s["ms"]
                 break
