@@ -21,8 +21,8 @@ throughout; the figure is host seconds.
   heretic heretic (MS-DOS, S3): Heretic 1.2 shareware `-timedemo demo1` looping from
           AUTOEXEC.BAT, timed as DOOM is.
   hexen   hexen  (MS-DOS, S3): the Hexen demo `-timedemo demo1`, likewise.
-  quake   quake  (MS-DOS, S3): Quake 1.06 shareware `+timedemo demo1` (no sound),
-          30 s of it from 20 s after power-on.
+  quake   quake  (MS-DOS, S3): Quake 1.06 shareware `+timedemo demo1` at 800x600
+          (no sound), 30 s of it from 12 s after power-on.
 
 The first and last frames of the timed stretch are saved as TAG-first.png and
 TAG-last.png beside the run's log, to check the run got where it should."""
@@ -276,9 +276,10 @@ class Run:
         return self.run_doom(banner="Press any key")
 
     def run_quake(self):
-        # Quake 1.06 shareware `+timedemo demo1` from AUTOEXEC.BAT, its software
-        # renderer drawing as fast as it can: 30 s of it, 20 s after power-on.
-        self.step(20000)
+        # Quake 1.06 shareware `+timedemo demo1` from AUTOEXEC.BAT at 800x600 (VESA
+        # mode 17), its software renderer drawing as fast as it can. The demo takes
+        # about 43 emulated seconds; the 30 s measured start 12 s after power-on.
+        self.step(12000)
         return self.timed(MEASURE_MS)
 
     def run_q3(self):
