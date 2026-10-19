@@ -50,6 +50,7 @@ cp local.example.toml local.toml     # your builds, ROM path, image sources
 | `sync [IMAGE]` | copy an image's disk in from its `local.toml` source (the committed version, if the source is in git) |
 | `setup BOARD` | boot one board for its BIOS setup, driven through a control pipe (see *Adding a machine*) |
 | `golden IMAGE CPU LOG` | keep a real machine's serial capture as the reference for that CPU |
+| `bench [GAME...] --box A --box B` | time games on each build in turn (see *Game benchmarks*) |
 
 **Selecting machines** (all repeatable, and combinable):
 
@@ -228,6 +229,48 @@ results/<time>-<image>/
 ```
 
 `RESULT PASS` or `RESULT FAIL` ends the summary, and the exit code follows it.
+
+## Game benchmarks
+
+`harness bench` times real games, to catch a build that got slower. Each game
+runs on a fixed machine whose `86box.cfg` is in `bench/`; the disks hold
+commercial games, so they stay outside the repository, in the directories
+`local.toml`'s `[bench]` section names:
+
+```toml
+[bench]
+gm98  = "~/bench/gm98"     # Windows 98 SE, Voodoo3: c.img, games.img
+gmdos = "~/bench/gmdos"    # MS-DOS 7.1, 64 MB: c.img, games.img, the game CDs
+doom  = "~/bench/doom"     # MS-DOS, S3: dos.img
+```
+
+Each directory keeps every disk as `FILE.base` and the CMOS as `nvr.base`;
+every run copies them over the working files first, so all runs start alike.
+The machine is held through the automation socket: emulated time passes only
+inside its step, key and wait requests, so each run gets the same input at
+the same emulated time on any host. Fast forward stays on, and the figure is
+host seconds for a fixed stretch of emulated time (smaller is faster).
+
+| game | machine | the timed stretch |
+|---|---|---|
+| `doom` | doom | DOOM 1.9 `-timedemo demo3`, median of 5 passes |
+| `q3` | gm98 | Quake III 1.11 `timedemo` demo001 at 800x600 |
+| `dagger` | gmdos | Daggerfall standing in save slot 1, 30 s |
+| `shock` | gmdos | Terminator: Future Shock standing in save slot 1, 30 s |
+| `aitd` | gmdos | Alone in the Dark's own demo, 30 s from 100 s in |
+
+```
+harness bench --box master --box mine --rounds 3
+harness bench dagger doom --box master --box mine
+```
+
+Rounds interleave the builds (each game on each build, then the next round),
+so a change in host load falls on all of them alike. Results go to
+`results/bench-<time>/`: `results.txt` with one line per run and a table of
+medians against the first build, and each run's log and its first and last
+screens, to check it got where it should. A run that crashes or never gets
+there is recorded as FAIL. A machine runs one game at a time: its disks are
+shared by every run.
 
 ## How processes are handled
 

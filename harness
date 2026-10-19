@@ -10,6 +10,7 @@ fast-forwarded, and judge what it prints on COM1.
   harness sync [IMAGE]                    copy an image's disk in from its source
   harness setup BOARD [--image IMAGE]     boot a board for its BIOS setup
   harness golden IMAGE CPU LOG            keep a real machine's output as reference
+  harness bench [GAME...] [--box B]... [--rounds N]   time games on builds (A/B)
 
 See README.md.
 """
@@ -571,6 +572,66 @@ def cmd_setup(s, args):
             os.unlink(ctl)
 
 
+def cmd_bench(s, args):
+    """Game benchmarks (harness_lib/gamebench.py): each game on each build in turn,
+    round after round, so host load falls on every build alike."""
+    from harness_lib import gamebench
+    bench = s.get("bench", {})
+    games = args.games or list(gamebench.GAMES)
+    for g in games:
+        if g not in gamebench.GAMES:
+            raise SystemExit("%s: not a game (%s)" % (g, " ".join(gamebench.GAMES)))
+        m = gamebench.MACHINE[g]
+        if m not in bench:
+            raise SystemExit("no [bench] %s = DIR in local.toml: the %s machine's disks" % (m, m))
+    builds = [resolve_build(s, b) for b in (args.box or [None])]
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = os.path.join(RESULTS, "bench-" + stamp)
+    os.makedirs(out, exist_ok=True)
+    log = open(os.path.join(out, "results.txt"), "w")
+    say("bench %s: %s on %s, %d round(s)" % (stamp, " ".join(games), ", ".join(b["label"] for b in builds),
+                                            args.rounds))
+    host = {}
+    for r in range(1, args.rounds + 1):
+        for g in games:
+            for b in builds:
+                if stop_event.is_set():
+                    return 1
+                tag = "%s-%s-%d" % (b["name"], g, r)
+                run = gamebench.Run(b["binary"], g, expand(bench[gamebench.MACHINE[g]]),
+                                    os.path.join(HERE, "bench", gamebench.MACHINE[g] + ".cfg"), out, tag)
+                try:
+                    h, gu, extra = run.go()
+                    line = "%-8s %-24s %7.2f s host for %6.1f s emulated (%.2fx)%s" % (
+                        g, b["name"] + " #%d" % r, h, gu, gu / h if h else 0, ("  " + extra) if extra else "")
+                    host.setdefault((g, b["name"]), []).append(h)
+                except Exception as e:  # a crash or a run that did not get there
+                    line = "%-8s %-24s FAIL: %s" % (g, b["name"] + " #%d" % r, e)
+                    host.setdefault((g, b["name"]), [])
+                say(line)
+                log.write(line + "\n")
+                log.flush()
+    say("")
+    head = "%-8s" % "game" + "".join("%22s" % b["name"][:21] for b in builds)
+    say(head)
+    log.write("\n" + head + "\n")
+    for g in games:
+        base = gamebench.median(host.get((g, builds[0]["name"]), [])) or None
+        row = "%-8s" % g
+        for b in builds:
+            v = host.get((g, b["name"]), [])
+            if not v:
+                row += "%22s" % "FAIL"
+            else:
+                m = gamebench.median(v)
+                rel = (" (%+.0f%%)" % ((m / base - 1) * 100)) if base and b is not builds[0] else ""
+                row += "%22s" % ("%.2f s%s" % (m, rel))
+        say(row)
+        log.write(row + "\n")
+    say("results in %s" % out)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(prog="harness", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -622,12 +683,17 @@ def main():
     p.add_argument("log", help="serial capture from the real machine")
     build_args(p)
 
+    p = sub.add_parser("bench", help="time games on one or more builds (bench/, harness_lib/gamebench.py)")
+    p.add_argument("games", nargs="*", help="doom q3 dagger shock aitd (default all)")
+    p.add_argument("--box", action="append", help="a build from local.toml or a binary path; repeat to compare")
+    p.add_argument("--rounds", type=int, default=2, help="rounds, each game on each build (default 2)")
+
     args = ap.parse_args()
     if getattr(args, "image", None) is None and args.cmd in ("run", "setup", "golden"):
         raise SystemExit("no image: put a descriptor in images/")
     s = settings()
     return dict(run=cmd_run, list=cmd_list, images=cmd_images, sync=cmd_sync,
-                setup=cmd_setup, golden=cmd_golden)[args.cmd](s, args)
+                setup=cmd_setup, golden=cmd_golden, bench=cmd_bench)[args.cmd](s, args)
 
 
 if __name__ == "__main__":

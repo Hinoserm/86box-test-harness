@@ -17,3 +17,10 @@ source = "~/src/86Box"
 # the committed version is taken.
 [images.cputest]
 source = "~/src/corsac-cputest/build/cputest.img"
+
+# harness bench: each game machine's directory, holding its disks as FILE.base
+# and its CMOS as nvr.base (the games are commercial, so they stay out of git).
+# [bench]
+# gm98 = "~/bench/gm98"
+# gmdos = "~/bench/gmdos"
+# doom = "~/bench/doom"
