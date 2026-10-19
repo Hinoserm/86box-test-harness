@@ -250,6 +250,11 @@ The machine is held through the automation socket: emulated time passes only
 inside its step, key and wait requests, so each run gets the same input at
 the same emulated time on any host. Fast forward stays on, and the figure is
 host seconds for a fixed stretch of emulated time (smaller is faster).
+The timed stretch runs in half-second slices, and each run also reports its
+slowest second: the one emulated second that took the host longest, as a
+speed. Under fast forward a second the host takes longer than a second over
+is one that would run below 100% without it, so a build should be no slower
+than the one it is compared with and never show a slowest second under 100%.
 
 | game | machine | the timed stretch |
 |---|---|---|

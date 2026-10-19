@@ -38,6 +38,7 @@ MACHINE = {"doom": "doom", "q3": "gm98", "dagger": "gmdos", "shock": "gmdos", "a
 DISKS = {"doom": ("dos.img",), "gm98": ("c.img", "games.img"), "gmdos": ("c.img", "games.img")}
 CD = {"dagger": "dagger.iso", "shock": "termfs.iso", "aitd": "aitd.cue"}
 MEASURE_MS = 30000
+SLICE_MS = 500  # the timed stretch runs in slices this long, for the slowest second
 
 SC = {"esc": 0x01, "enter": 0x1c, "shift": 0x2a, "win": 0x15b, "space": 0x39}
 ROWS = [("1234567890-=", 0x02), ("qwertyuiop[]", 0x10), ("asdfghjkl;'`", 0x1e), ("\\zxcvbnm,./", 0x2b)]
@@ -178,14 +179,44 @@ class Run:
             os.kill(self.box.pid, signal.SIGKILL)
             self.box.wait()
 
+    def slice(self, request):
+        """One request inside the timed stretch, kept as (host s, emulated s) for the
+        slowest second (slowest())."""
+        t = time.monotonic()
+        r = self.req(request)
+        self.slices.append((time.monotonic() - t, (r["ms"] - self.ms) / 1000.0))
+        self.ms = r["ms"]
+        return r
+
+    def mark(self):
+        """Where the timed stretch's slices start."""
+        self.ms = self.req("status")["ms"]
+
+    def slowest(self):
+        """The slowest stretch of one emulated second, as a speed (1.0 = real time):
+        under fast forward, a second the host took longer than a second over is one
+        that would have run below 100% without it."""
+        worst = None
+        for i in range(len(self.slices)):
+            h = g = 0.0
+            for dh, dg in self.slices[i:]:
+                h, g = h + dh, g + dg
+                if g >= 1.0:
+                    break
+            if g >= 1.0 and h > 0:
+                worst = g / h if worst is None else min(worst, g / h)
+        return worst
+
     def timed(self, ms):
-        a = self.req("status")
+        self.mark()
+        a = self.ms
         self.shot("first")
         t = time.monotonic()
-        r = self.step(ms)
+        while self.ms - a < ms:
+            self.slice("step %d" % min(SLICE_MS, ms - (self.ms - a)))
         host = time.monotonic() - t
         self.shot("last")
-        return host, (r["ms"] - a["ms"]) / 1000.0
+        return host, (self.ms - a) / 1000.0
 
     def dos_prompt(self):
         if not self.req("wait text 120000 C:\\>", timeout=600).get("matched"):
@@ -195,13 +226,23 @@ class Run:
     def run_doom(self):
         marks = []
         for i in range(6):  # pass 0 has the boot in it
-            r = self.req("wait text 1800000 timed", timeout=3600)
+            if i == 0:
+                r = self.req("wait text 1800000 timed", timeout=3600)
+            else:
+                # In slices, for the slowest second (the first pass, with the boot, not).
+                for _ in range(4 * 1800):
+                    r = self.slice("wait text %d timed" % SLICE_MS)
+                    if r.get("matched"):
+                        break
             if not r.get("matched"):
                 raise RuntimeError("no timedemo result")
             marks.append((time.monotonic(), r["ms"]))
             if i == 0:
                 self.shot("first")
-            self.step(5000)  # past the result line, into the next pass
+                self.step(5000)  # past the result line, into the next pass
+                self.mark()
+            else:
+                self.slice("step 5000")
         self.shot("last")
         # Pass i lasts from result line i to line i + 1 (the 5 s stepped after a line
         # included); pass 0, with the boot, is not counted.
@@ -217,11 +258,15 @@ class Run:
                  "+demo demo001\n")
         t0 = t1 = None
         for _ in range(4 * 600):
-            self.step(250)
+            if t0 is None:
+                self.step(SLICE_MS)
+            else:
+                self.slice("step %d" % SLICE_MS)
             s = self.req("status")
             if t0 is None and s["w"] == 800:
                 t0, g0 = time.monotonic(), s["ms"]
                 self.shot("first")
+                self.mark()
             elif t0 is not None and s["w"] == 640:
                 t1, g1 = time.monotonic(), s["ms"]
                 break
@@ -266,12 +311,14 @@ class Run:
         return self.timed(MEASURE_MS)
 
     def go(self):
+        self.slices = []
         self.prepare()
         self.start()
         try:
             host, guest = getattr(self, "run_" + self.game)()
         finally:
             self.stop()
+        self.slowest_speed = self.slowest()
         extra = ""
         if self.game == "q3":
             log = fat32_read(os.path.join(self.data, "games.img"), "QUAKE3/BASEQ3/QCONSOLE.LOG") or b""

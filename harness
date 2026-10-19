@@ -592,6 +592,7 @@ def cmd_bench(s, args):
     say("bench %s: %s on %s, %d round(s)" % (stamp, " ".join(games), ", ".join(b["label"] for b in builds),
                                             args.rounds))
     host = {}
+    slow = {}  # each game and build: its slowest second over every round, as a speed
     for r in range(1, args.rounds + 1):
         for g in games:
             for b in builds:
@@ -602,17 +603,23 @@ def cmd_bench(s, args):
                                     os.path.join(HERE, "bench", gamebench.MACHINE[g] + ".cfg"), out, tag)
                 try:
                     h, gu, extra = run.go()
-                    line = "%-8s %-24s %7.2f s host for %6.1f s emulated (%.2fx)%s" % (
-                        g, b["name"] + " #%d" % r, h, gu, gu / h if h else 0, ("  " + extra) if extra else "")
+                    sp = run.slowest_speed
+                    line = "%-8s %-24s %7.2f s host for %6.1f s emulated (%.2fx), slowest second %s%s" % (
+                        g, b["name"] + " #%d" % r, h, gu, gu / h if h else 0,
+                        "%.0f%%" % (sp * 100) if sp else "?", ("  " + extra) if extra else "")
                     host.setdefault((g, b["name"]), []).append(h)
+                    if sp:
+                        slow[(g, b["name"])] = min(sp, slow.get((g, b["name"]), sp))
                 except Exception as e:  # a crash or a run that did not get there
                     line = "%-8s %-24s FAIL: %s" % (g, b["name"] + " #%d" % r, e)
                     host.setdefault((g, b["name"]), [])
                 say(line)
                 log.write(line + "\n")
                 log.flush()
+    # Each build against the first: the median host time (smaller is faster), and the
+    # slowest second, which under 100% means the game would run below full speed there.
     say("")
-    head = "%-8s" % "game" + "".join("%22s" % b["name"][:21] for b in builds)
+    head = "%-8s" % "game" + "".join("%30s" % b["name"][:29] for b in builds)
     say(head)
     log.write("\n" + head + "\n")
     for g in games:
@@ -621,13 +628,17 @@ def cmd_bench(s, args):
         for b in builds:
             v = host.get((g, b["name"]), [])
             if not v:
-                row += "%22s" % "FAIL"
+                row += "%30s" % "FAIL"
             else:
                 m = gamebench.median(v)
                 rel = (" (%+.0f%%)" % ((m / base - 1) * 100)) if base and b is not builds[0] else ""
-                row += "%22s" % ("%.2f s%s" % (m, rel))
+                sp = slow.get((g, b["name"]))
+                low = ("  min %.0f%%%s" % (sp * 100, "!" if sp < 1.0 else "")) if sp else ""
+                row += "%30s" % ("%.2f s%s%s" % (m, rel, low))
         say(row)
         log.write(row + "\n")
+    say("(min: the slowest second of emulated time, as speed; ! marks one below 100%)")
+    log.write("(min: the slowest second of emulated time, as speed; ! marks one below 100%)\n")
     say("results in %s" % out)
     return 0
 
