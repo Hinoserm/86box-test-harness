@@ -18,6 +18,9 @@ throughout; the figure is host seconds.
   shock   gmdos: Terminator: Future Shock loads save slot 1 and stands; 30 s.
   aitd    gmdos: Alone in the Dark (CD) left alone runs its own demo; 30 s of it from
           100 s after the game starts.
+  heretic heretic (MS-DOS, S3): Heretic 1.2 shareware `-timedemo demo1` looping from
+          AUTOEXEC.BAT, timed as DOOM is.
+  hexen   hexen  (MS-DOS, S3): the Hexen demo `-timedemo demo1`, likewise.
 
 The first and last frames of the timed stretch are saved as TAG-first.png and
 TAG-last.png beside the run's log, to check the run got where it should."""
@@ -33,9 +36,11 @@ import subprocess
 import time
 import zlib
 
-GAMES = ("doom", "q3", "dagger", "shock", "aitd")
-MACHINE = {"doom": "doom", "q3": "gm98", "dagger": "gmdos", "shock": "gmdos", "aitd": "gmdos"}
-DISKS = {"doom": ("dos.img",), "gm98": ("c.img", "games.img"), "gmdos": ("c.img", "games.img")}
+GAMES = ("doom", "q3", "dagger", "shock", "aitd", "heretic", "hexen")
+MACHINE = {"doom": "doom", "q3": "gm98", "dagger": "gmdos", "shock": "gmdos", "aitd": "gmdos", "heretic": "heretic",
+           "hexen": "hexen"}
+DISKS = {"doom": ("dos.img",), "heretic": ("dos.img",), "hexen": ("dos.img",), "gm98": ("c.img", "games.img"),
+         "gmdos": ("c.img", "games.img")}
 CD = {"dagger": "dagger.iso", "shock": "termfs.iso", "aitd": "aitd.cue"}
 MEASURE_MS = 30000
 SLICE_MS = 500  # the timed stretch runs in slices this long, for the slowest second
@@ -223,13 +228,23 @@ class Run:
             raise RuntimeError("no DOS prompt")
 
     # --- the games ----------------------------------------------------------------------
-    def run_doom(self):
+    def run_doom(self, banner=None):
         marks = []
         for i in range(6):  # pass 0 has the boot in it
             if i == 0:
+                if banner:  # a game that waits for a key at each start
+                    if not self.req("wait text 1800000 " + banner, timeout=3600).get("matched"):
+                        raise RuntimeError("no start banner")
+                    self.key("enter")
                 r = self.req("wait text 1800000 timed", timeout=3600)
             else:
                 # In slices, for the slowest second (the first pass, with the boot, not).
+                if banner:
+                    for _ in range(4 * 1800):
+                        if self.slice("wait text %d %s" % (SLICE_MS, banner)).get("matched"):
+                            break
+                    self.slice("key down 0x%x" % SC["enter"])
+                    self.slice("key up 0x%x" % SC["enter"])
                 for _ in range(4 * 1800):
                     r = self.slice("wait text %d timed" % SLICE_MS)
                     if r.get("matched"):
@@ -249,6 +264,14 @@ class Run:
         host = [b[0] - a[0] for a, b in zip(marks[1:], marks[2:])]
         guest = [(b[1] - a[1]) / 1000.0 for a, b in zip(marks[1:], marks[2:])]
         return median(host), median(guest)
+
+    # Heretic 1.2 and the Hexen demo: DOOM's engine, the same loop and the same
+    # result line ("timed N gametics in M realtics"), demo1 each. The Hexen demo
+    # (the 4-level beta) waits for a key at every start.
+    run_heretic = run_doom
+
+    def run_hexen(self):
+        return self.run_doom(banner="Press any key")
 
     def run_q3(self):
         self.step(50000)  # Windows to the desktop
