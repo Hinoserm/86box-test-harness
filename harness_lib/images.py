@@ -16,6 +16,13 @@ DISK_BYTES = 16 * 1024 * 1024
 HDD_PARAMETERS = "32, 16, 64, 0, ide"
 
 
+class Limits:
+    def __init__(self, d):
+        self.start_wait = d.get("start_wait", 60)
+        self.working_wait = d.get("working_wait", 30)
+        self.stall = d.get("stall", 60)
+
+
 class Image:
     def __init__(self, root, name):
         self.name = name
@@ -37,6 +44,9 @@ class Image:
         self.start_wait = d.get("start_wait", 10)
         self.working_wait = d.get("working_wait", 5)
         self.stall = d.get("stall", 60)
+        # The same limits in emulated seconds, for COM1 on the automation
+        # socket, where the watchdogs run on the emulated clock.
+        self.emulated = Limits(d.get("emulated", {}))
 
     def info(self):
         if not os.path.exists(self.disk):

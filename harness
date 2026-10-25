@@ -5,6 +5,7 @@ fast-forwarded, and judge what it prints on COM1.
   harness run IMAGE [--family F] [--socket S] [--machine M] [--cpu C]
                     [--test-all] [--speed S | --all-speeds] [--box BUILD]
                     [-j N] [--passes N] [--timeout S] [--interp]
+                    [--com1 auto|pty|socket]
   harness list [--family F] [--cpu C]     machines, and the speeds each takes
   harness images                          the images on file
   harness sync [IMAGE]                    copy an image's disk in from its source
@@ -37,6 +38,9 @@ from harness_lib import images, launch, parsers, tables  # noqa: E402
 MACHINES = os.path.join(HERE, "machines")
 GOLDEN = os.path.join(HERE, "golden")
 RESULTS = os.path.join(HERE, "results")
+# With COM1 on the socket: host seconds the emulated clock may stand still
+# (86Box itself stuck, not the guest) before the run is given up.
+FROZEN = 60
 
 print_lock = threading.Lock()
 # Set on Ctrl+C: the running machine stops through its normal cleanup and
@@ -106,13 +110,16 @@ def resolve_build(s, name, source_arg=None):
     # built from the tree's current revision: say so.
     inside = os.path.realpath(binary).startswith(os.path.realpath(source) + os.sep)
     label = "%s %s" % (name, tree) if inside else "%s (tables from %s)" % (name, tree)
-    # The automation socket's ff command: only a binary built with it.
+    # The automation socket's ff command, and its COM ports (the automation
+    # serial backend): only a binary built with them.
     with open(binary, "rb") as f:
-        ff_socket = b'"ff":%s' in f.read()
+        exe = f.read()
+    ff_socket = b'"ff":%s' in exe
+    serial_socket = b"has no automation backend" in exe
     return dict(name=name, binary=binary, source=source, label=label,
                 fast_forward_option='"fast_forward"' in config_c,
                 fast_forward_arg='"--fast-forward"' in main_c,
-                fast_forward_socket=ff_socket,
+                fast_forward_socket=ff_socket, serial_socket=serial_socket,
                 cpus=tables.load_cpus(src), machines=tables.load_machines(src))
 
 
@@ -123,11 +130,27 @@ def need_fast_forward(build):
                          " build it with AUTOMATION=ON)" % build["label"])
 
 
-def ff_socket(build, case):
+def com1_mode(build, asked):
+    """Where COM1 goes: "socket" (the automation socket, read in emulated
+    time) when the build has it, else "pty". --com1 pty or socket insists."""
+    if asked == "socket" and not build["serial_socket"]:
+        raise SystemExit("%s has no automation serial backend (build it with AUTOMATION=ON, from 86Box"
+                         " after 2026-10-20): --com1 socket is not possible" % build["label"])
+    if asked in ("pty", "socket"):
+        return asked
+    return "socket" if build["serial_socket"] else "pty"
+
+
+def needs_ff_socket(build):
+    return not (build["fast_forward_option"] or build["fast_forward_arg"]) and build["fast_forward_socket"]
+
+
+def socket_path(build, case, com1):
     """Where the automation socket goes when fast forward is turned on
-    through it (a build with neither of the other ways), else None. A Unix
-    socket's path has a length limit (104 bytes on macOS)."""
-    if build["fast_forward_option"] or build["fast_forward_arg"] or not build["fast_forward_socket"]:
+    through it (a build with neither of the other ways) or COM1 is read
+    through it, else None. A Unix socket's path has a length limit (104
+    bytes on macOS)."""
+    if not (com1 == "socket" or needs_ff_socket(build)):
         return None
     path = os.path.join(case, "a.sock")
     if len(path.encode()) > 100:
@@ -135,18 +158,21 @@ def ff_socket(build, case):
     return path
 
 
-def box_args(build, case):
+def box_args(build, case, com1):
     """What the binary needs on its command line besides the case and cfg."""
-    if build["fast_forward_arg"]:
-        return ["--fast-forward"]
-    sock = ff_socket(build, case)
-    return ["--automation", "unix:" + sock] if sock else []
+    args = ["--fast-forward"] if build["fast_forward_arg"] else []
+    sock = socket_path(build, case, com1)
+    return args + (["--automation", "unix:" + sock] if sock else [])
 
 
 def box_start(box, build, case, cfg):
-    box.start(cfg, box_args(build, case))
-    sock = ff_socket(build, case)
-    if sock and not box.automation_ff(sock):
+    sock = socket_path(build, case, box.com1)
+    if sock and os.path.exists(sock):
+        os.unlink(sock)
+    box.start(cfg, box_args(build, case, box.com1))
+    if sock and not box.connect(sock):
+        raise SystemExit("%s: no automation socket at %s" % (case, sock))
+    if needs_ff_socket(build) and not box.automation_ff(sock):
         raise SystemExit("%s: fast forward did not turn on through %s" % (case, sock))
 
 
@@ -236,10 +262,11 @@ def speeds_for(fam, mach, speed=None, all_speeds=False):
 
 # ---- one run ----------------------------------------------------------------
 
-def prepare_case(s, build, image, t, case, fam=None, cpu=None, interp=False):
+def prepare_case(s, build, image, t, case, fam=None, cpu=None, interp=False, com1="pty"):
     """A run's own copy of machine T in CASE: its CMOS, private copies of the
-    emulator and the disk, and the cfg with the CPU (when given) set.
-    Returns the cfg text, with @SERIAL@ for the launcher to fill."""
+    emulator and the disk, and the cfg with the CPU (when given) and COM1
+    set. Returns the cfg text, with @SERIAL@ for the launcher to fill when
+    COM1 is on a pty."""
     os.makedirs(case, exist_ok=True)
     nvr = os.path.join(case, "nvr")
     if os.path.exists(nvr):
@@ -272,6 +299,9 @@ def prepare_case(s, build, image, t, case, fam=None, cpu=None, interp=False):
     cfg["Hard disks"]["hdd_01_ide_channel"] = "0:0"
     cfg["Hard disks"]["hdd_01_parameters"] = images.HDD_PARAMETERS
     cfg["General"]["fast_forward"] = "1"
+    if com1 == "socket":
+        cfg["Ports (COM & LPT)"]["serial1_device"] = "automation"
+        cfg.pop("Named Pipe (COM) #1", None)
     return cfg_text(cfg)
 
 
@@ -282,25 +312,43 @@ def drop_copies(case):
             os.unlink(p)
 
 
-def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
+def run_one(s, build, image, parser, fam, cpu, t, rundir, args, com1):
     tag = "%s %s %s" % (t["slug"], fam.internal_name, cpu.name)
     case = os.path.join(rundir, "%s-%s-%s" % (t["slug"].replace("/", "-"), fam.internal_name,
                                               re.sub(r"[^0-9A-Za-z]+", "_", cpu.name)))
-    cfg = prepare_case(s, build, image, t, case, fam, cpu, args.interp)
-    box = launch.Box(case, os.path.join(case, "86Box.bin"))
+    cfg = prepare_case(s, build, image, t, case, fam, cpu, args.interp, com1)
+    box = launch.Box(case, os.path.join(case, "86Box.bin"), com1)
+    # With COM1 on the socket, the watchdogs run on the emulated clock, so a
+    # loaded host (-j N) slows a machine down without making it look hung;
+    # with the pty, on the host's. --timeout is the host's either way.
+    emulated = com1 == "socket"
+    limits = image.emulated if emulated else image
+    unit = " emulated" if emulated else ""
     status = "never started"
     notes = []
     start = time.time()
     try:
         box_start(box, build, case, cfg)
+        t0 = 0.0 if emulated else start
         started_at = None
         working = image.working is None
-        last_len, last_change = 0, time.time()
+        last_len, last_change = 0, box.now()
+        moved, last_ms = time.time(), None
         while time.time() - start < args.timeout:
             box.pump(0.25)
+            now = box.now()
             text = box.buf.decode("latin-1")
-            if len(text) != last_len:
-                last_len, last_change = len(text), time.time()
+            if not emulated:
+                if len(text) != last_len:
+                    last_len, last_change = len(text), now
+            else:
+                # The socket's own record of COM1's last byte, to the ms.
+                last_change = box.com1_last() if box.com1_last() is not None else t0
+                if box.emu_ms != last_ms:
+                    moved, last_ms = time.time(), box.emu_ms
+                elif time.time() - moved > FROZEN:
+                    status = "emulator stuck: emulated time stood still for %d s (screen.png)" % FROZEN
+                    break
             if not box.alive():
                 status = "emulator exited (%s)" % box.box.returncode
                 break
@@ -309,10 +357,11 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
                 break
             if started_at is None:
                 if image.start.search(text):
-                    started_at = time.time()
-                    notes.append("started at %.1f s" % (started_at - start))
-                elif time.time() - start > image.start_wait:
-                    status = "not started within %d s: the machine never ran the image (screen.png)" % image.start_wait
+                    started_at = now
+                    notes.append("started at %.1f s%s" % (started_at - t0, unit))
+                elif now - t0 > limits.start_wait:
+                    status = "not started within %d s%s: the machine never ran the image (screen.png)" % (
+                        limits.start_wait, unit)
                     break
                 continue
             # A second start line: the machine reset (a triple fault, say)
@@ -324,16 +373,16 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
             if not working:
                 if image.working.search(text):
                     working = True
-                    notes.append("working at %.1f s" % (time.time() - start))
-                elif time.time() - started_at > image.working_wait:
-                    status = "started but not working within %d s (screen.png)" % image.working_wait
+                    notes.append("working at %.1f s%s" % (now - t0, unit))
+                elif now - started_at > limits.working_wait:
+                    status = "started but not working within %d s%s (screen.png)" % (limits.working_wait, unit)
                     break
                 continue
             if len([l for l in text.splitlines() if image.done.search(l)]) >= args.passes:
                 status = "done"
                 break
-            if time.time() - last_change > image.stall:
-                status = "hung: nothing on COM1 for %d s (screen.png)" % image.stall
+            if now - last_change > limits.stall:
+                status = "hung: nothing on COM1 for %d s%s (screen.png)" % (limits.stall, unit)
                 break
         else:
             status = "timed out after %d s" % args.timeout
@@ -341,6 +390,10 @@ def run_one(s, build, image, parser, fam, cpu, t, rundir, args):
     finally:
         box.stop()
         drop_copies(case)
+    if emulated:
+        notes.append("COM1 on the automation socket, %.1f s emulated" % (box.emu_ms / 1000.0))
+        if box.lost:
+            notes.append("%d bytes of COM1 lost before they were read" % box.lost)
     result = dict(tag=tag, slug=t["slug"], family=fam.internal_name, family_name=fam.name, speed=cpu.name,
                   status=status, notes=notes, seconds=int(time.time() - start), case=case,
                   parsed=parser.parse(box.buf.decode("latin-1"), image))
@@ -402,14 +455,17 @@ def cmd_run(s, args):
     jobs = plan(args, build)
     if not jobs:
         raise SystemExit("nothing to run")
+    com1 = com1_mode(build, args.com1)
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     rundir = os.path.join(RESULTS, "%s-%s" % (stamp, image.name))
     os.makedirs(rundir)
-    say("%s: %d run(s), build %s, results in %s" % (image.name, len(jobs), build["label"],
-                                                   os.path.relpath(rundir)))
+    say("%s: %d run(s), build %s, COM1 %s, results in %s" % (
+        image.name, len(jobs), build["label"],
+        "on the automation socket (emulated-time watchdogs)" if com1 == "socket" else "on a pty",
+        os.path.relpath(rundir)))
     def one(t, fam, c):
-        return None if stop_event.is_set() else run_one(s, build, image, parser, fam, c, t, rundir, args)
+        return None if stop_event.is_set() else run_one(s, build, image, parser, fam, c, t, rundir, args, com1)
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs))
     futs = [ex.submit(one, t, fam, c) for t, fam, c in jobs]
     try:
@@ -421,7 +477,8 @@ def cmd_run(s, args):
     ex.shutdown(wait=True)
     results = [r for r in (f.result() for f in futs) if r]
 
-    lines = ["harness %s" % image.name, "build   %s" % build["label"], "image   %s" % image.info(), ""]
+    lines = ["harness %s" % image.name, "build   %s" % build["label"], "image   %s" % image.info(),
+             "com1    %s" % ("automation socket, emulated-time watchdogs" if com1 == "socket" else "pty"), ""]
     ok = True
     by_family = {}
     for r in results:
@@ -518,13 +575,14 @@ def cmd_setup(s, args):
         if fam.internal_name != t["cpu_family"]:
             save_dir = os.path.join(t["dir"], "nvr-" + fam.internal_name)
     case = os.path.join(RESULTS, "setup-" + t["slug"].replace("/", "-") + ("-" + fam.internal_name if fam else ""))
-    cfg = prepare_case(s, build, image, t, case, fam, cpu)
+    com1 = com1_mode(build, args.com1)
+    cfg = prepare_case(s, build, image, t, case, fam, cpu, com1=com1)
     ctl = os.path.join(case, "ctl")
     if os.path.exists(ctl):
         os.unlink(ctl)
     os.mkfifo(ctl)
     fd = os.open(ctl, os.O_RDONLY | os.O_NONBLOCK)
-    box = launch.Box(case, os.path.join(case, "86Box.bin"))
+    box = launch.Box(case, os.path.join(case, "86Box.bin"), com1)
     start = time.time()
     shown = 0
     try:
@@ -651,6 +709,11 @@ def main():
         p.add_argument("--box", help="build name from local.toml, or a path to an 86Box binary")
         p.add_argument("--source", help="with --box PATH: the 86Box source tree it was built from")
 
+    def com1_arg(p):
+        p.add_argument("--com1", choices=("auto", "pty", "socket"), default="auto",
+                       help="read COM1 from a pty, or from the automation socket in emulated time"
+                            " (default auto: the socket when the build has it)")
+
     def select_args(p):
         p.add_argument("--family", action="append", help="machine family from families.toml (486, 586, ...)")
         p.add_argument("--socket", action="append", help="a folder under machines/ (ss7, slot1, ...)")
@@ -671,6 +734,7 @@ def main():
     p.add_argument("--passes", type=int, default=1, help="done lines to wait for (default 1)")
     p.add_argument("--timeout", type=int, default=3600, help="seconds per run (default 3600)")
     p.add_argument("--interp", action="store_true", help="recompiler off, where the CPU allows it")
+    com1_arg(p)
 
     p = sub.add_parser("list", help="machines on file and the CPUs each takes")
     build_args(p)
@@ -687,6 +751,7 @@ def main():
     p.add_argument("--cpu", help="boot it with this CPU; `save` then keeps the CMOS as nvr-<family>/")
     p.add_argument("--speed", help="with --cpu: one speed (default the fastest in spec)")
     build_args(p)
+    com1_arg(p)
 
     p = sub.add_parser("golden", help="keep a real machine's output as the reference for a CPU")
     p.add_argument("image")

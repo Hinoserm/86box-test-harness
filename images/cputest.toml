@@ -20,3 +20,12 @@ done = "^DONE "
 start_wait = 10
 working_wait = 3
 stall = 30
+
+# The same in emulated seconds, for COM1 on the automation socket (the
+# watchdogs then run on the emulated clock; --com1). Measured on five boards:
+# `start` 3-21 s after power-on (the 440ZX Soltek's BIOS is the slowest),
+# `working` within 0.4 s of it, and at most 4.1 s between lines.
+[emulated]
+start_wait = 60
+working_wait = 10
+stall = 30

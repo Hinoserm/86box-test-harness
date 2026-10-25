@@ -13,8 +13,9 @@ COM1.
 A run goes like this: pick the machines (by family, socket or board), pick the
 CPUs (or keep each machine's own), then boot each combination, one at a time.
 Each machine starts from its saved CMOS, with the test image as its first IDE
-disk and COM1 on a pseudo-terminal. The harness watches COM1 and fails the
-machine the moment it stops making progress. Then it writes one report.
+disk and COM1 on a pseudo-terminal, or on 86Box's automation socket when the
+build has it. The harness watches COM1 and fails the machine the moment it
+stops making progress. Then it writes one report.
 
 It started as the bench for [corsac-cputest](https://github.com/Hinoserm/corsac-cputest),
 an x86 accuracy test that compares 86Box's interpreter with its recompiler.
@@ -30,6 +31,10 @@ Any bootable image that reports on COM1 can use it.
   `fast_forward` config option ([General] `fast_forward = 1`): every machine
   starts fast-forwarded, and a build without the option is refused.
 - The 86Box ROM set
+- Optional: a build with `-D AUTOMATION=ON` from 2026-10-20 or later (86Box
+  [#8439](https://github.com/86Box/86Box/pull/8439)) puts COM1 on the
+  automation socket instead of a pty, and the watchdogs on the emulated clock
+  (see *COM1: pty or socket*)
 
 ## Setup
 
@@ -73,7 +78,33 @@ cp local.example.toml local.toml     # your builds, ROM path, image sources
 **Options:** `--box NAME|PATH` for the build (a name from `local.toml`, or a
 binary; add `--source TREE` for a binary kept outside its tree, e.g. a frozen
 copy); `-j N` for machines at once (default 1); `--passes N` for done lines to
-wait for; `--timeout S` per run; `--interp` for the recompiler off.
+wait for; `--timeout S` per run, in host seconds; `--interp` for the recompiler
+off; `--com1 auto|pty|socket` for where COM1 is read (default `auto`: the
+socket when the build has it). `setup` takes `--com1` too.
+
+## COM1: pty or socket
+
+The harness reads COM1 one of two ways, and the report's `com1` line says which:
+
+- **pty:** COM1 is a named pipe on a pseudo-terminal (`serial1_device = pipe`
+  in each machine's cfg, the path filled in at launch). Any build works. The
+  watchdogs (`start_wait`, `working_wait`, `stall`) count host seconds.
+- **socket:** COM1 gets 86Box's `automation` serial backend, and the harness
+  reads it with `serial read` over the automation socket, the same connection
+  that turns on fast forward where the build needs it. Every read also gives
+  the emulated time, so the watchdogs count emulated seconds, from the
+  image's `[emulated]` limits. A host that is busy (`-j N`, other work) slows
+  a machine down without making it look hung or unstarted. On 2 CPUs with
+  five machines at once, the pty mode failed the slowest-booting board ("not
+  started within 10 s") where the socket mode passed all five.
+
+  Two more verdicts come with it. A machine whose emulated clock stops for 60
+  host seconds is "emulator stuck": 86Box itself, not the guest, stopped. And
+  `serial.times` in the case folder has the emulated ms of each read that
+  brought COM1 output, to see when a quiet spell began.
+
+Both give the same COM1 bytes, except that the pty adds a carriage return
+before each line feed (`\r\r\n` for the guest's `\r\n`).
 
 ## Images
 
@@ -93,6 +124,11 @@ fail = "^FAIL"            # generic parser: any line matching this fails the run
 start_wait = 10           # wall-clock seconds from power-on to `start`
 working_wait = 3          # from `start` to `working`
 stall = 30                # the longest COM1 silence allowed after that
+
+[emulated]                # the same in emulated seconds, for COM1 on the socket
+start_wait = 60           # (defaults 60, 30 and 60)
+working_wait = 10
+stall = 30
 ```
 
 What an image must do:
@@ -106,7 +142,9 @@ What an image must do:
 - **Say something early and keep talking.** Fast-forwarded boards reach the
   boot sector in 2 to 3 seconds. A machine that misses `start_wait`, or goes
   quiet for `stall`, is failed with a screenshot, instead of hanging the whole
-  run.
+  run. Fast-forwarded, a board runs at a few times real speed at most, so the
+  emulated limits come out larger than the wall-clock ones; a run in socket
+  mode notes how many emulated seconds it took, to choose them by.
 
 **Parsers:**
 
